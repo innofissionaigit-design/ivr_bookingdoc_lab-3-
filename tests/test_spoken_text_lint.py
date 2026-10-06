@@ -37,8 +37,8 @@ from agent.spoken_text_lint import find_artifacts, has_spoken_artifact, scan_sou
 # this (never raise it) as reply_templates.py/reply_templates_i18n.py
 # get reworded to natural clauses.
 _KNOWN_BACKLOG = {
-    "agent/reply_templates.py": 13,  # lowered from 14: the "sample: value" phrasing became a sentence (sample_wording.py)
-    "agent/reply_templates_i18n.py": 26,  # lowered from 28: Hindi and English "sample: value" became sentences
+    "agent/reply_templates.py": 10,  # lowered from 12: the booking-lookup field labels became a sentence
+    "agent/reply_templates_i18n.py": 20,  # lowered from 24: the same, in Hindi and English
 }
 
 

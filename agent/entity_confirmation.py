@@ -29,6 +29,13 @@ ENTITY_SLOTS = {
     "doctor_availability": ("doctor_name",),
     "lookup_booking": ("confirmation_id", "phone"),
     "resend_confirmation": ("confirmation_id", "phone"),
+    # story: "Patient name is misheard"
+    # The patient's name decides which record a booking is FILED under, so a misheard one makes
+    # the appointment unfindable later -- the same class of harm as a misheard test name, and the
+    # reason "Patient name is misheard" is its own story. book_appointment is not in
+    # GATED_FACTUAL_INTENTS (it runs no factual lookup to withhold), so this entry is not reached
+    # by action_gate; main.py reads it directly when a name is captured on an unreliable turn.
+    "book_appointment": ("patient_name",),
 }
 _NUMERIC = frozenset({"confirmation_id", "phone"})
 

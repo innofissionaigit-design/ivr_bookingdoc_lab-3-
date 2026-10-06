@@ -167,6 +167,7 @@ def available_slots(db: Session, doctor_id: int, date: str) -> list[str]:
     return free
 
 
+# story: "Caller asks for the earliest available appointment"
 def earliest_available(db: Session, doctor_id: int, from_date: datetime.date, horizon_days: int = 14) -> dict | None:
     for i in range(horizon_days):
         d = (from_date + datetime.timedelta(days=i)).isoformat()
@@ -176,6 +177,8 @@ def earliest_available(db: Session, doctor_id: int, from_date: datetime.date, ho
     return None
 
 
+# story: "Requested slot is already taken"
+# story: "Caller moves an existing appointment"
 def nearest_alternatives(db: Session, doctor_id: int, date: str, time_slot: str) -> list[dict]:
     """KCD-361's exact shape: the nearest other time the same day, plus
     the same time on the nearest other day -- never a slot that is not
@@ -450,6 +453,7 @@ def find_conflict(db: Session, patient_phone: str, date: str, time_slot: str) ->
     }
 
 
+# story: "Caller cancels an appointment"
 def active_cancellation_policy(db: Session, as_of: datetime.date | None = None) -> CancellationPolicy | None:
     """KCD-488: the policy row IN FORCE at `as_of` (default: today) --
     versioned configuration with effective dates, never a flat constant a
@@ -466,6 +470,7 @@ def active_cancellation_policy(db: Session, as_of: datetime.date | None = None) 
     )
 
 
+# story: "Caller cancels an appointment"
 def cancellation_charge(db: Session, appt: Appointment) -> tuple[int, CancellationPolicy | None]:
     """-> (charge_inr, policy_used). policy_used is None only if the
     cancellation_policies table has no row at all -- seed_default_
@@ -500,16 +505,44 @@ def cancellation_charge(db: Session, appt: Appointment) -> tuple[int, Cancellati
     return round(fee * policy.charge_percent / 100), policy
 
 
+# story: "Caller cancels an appointment"
+def refund_terms(policy: CancellationPolicy | None, charge_inr: int) -> tuple[str, int | None]:
+    """-> (eligibility, percent) for what the caller is ENTITLED to, in the words the reply speaks:
+    "full" / "partial" (with a percent) / "none".
+
+    The story wants refund eligibility STATED, not inferred by the caller from a charge. It is
+    derived from the same policy row that produced the charge, never from a second rule:
+
+      no policy row        "none" -- nothing authorises a promise, so none is made
+      not refund_eligible  "none" -- the policy says so outright
+      charge of 0          "full" -- nothing was charged, so nothing is withheld
+      otherwise            "partial", 100 - charge_percent (a 100% charge is "none")
+
+    Eligibility only. Nothing here is an AMOUNT: this stack has no payment system, so a rupee
+    figure for a refund would be a number nobody can honour."""
+    if policy is None or not policy.refund_eligible:
+        return "none", None
+    if charge_inr <= 0:
+        return "full", None
+    percent = 100 - int(policy.charge_percent or 0)
+    return ("partial", percent) if 0 < percent < 100 else ("none", None)
+
+
+# story: "Caller cancels an appointment"
 def cancel_appointment(db: Session, confirmation_id: str, confirm_charge: bool = False) -> dict:
     appt = db.query(Appointment).filter_by(confirmation_id=confirmation_id, status="confirmed").first()
     if not appt:
         return {"success": False, "reason": "not_found"}
     charge, policy = cancellation_charge(db, appt)
+    eligibility, percent = refund_terms(policy, charge)
     if charge > 0 and not confirm_charge:
         # Stated BEFORE it is applied (KCD-372) -- the caller must say yes
         # a second time, with the amount already in their ear, before
-        # anything is written.
-        return {"success": False, "reason": "charge_confirmation_required", "charge_inr": charge}
+        # anything is written. The refund they are entitled to goes with it:
+        # agreeing to a deduction without knowing what comes back is not an
+        # informed yes.
+        return {"success": False, "reason": "charge_confirmation_required", "charge_inr": charge,
+                "refund_eligibility": eligibility, "refund_percent": percent}
 
     lock = db.get(SlotLock, (appt.doctor_id, appt.date, appt.time_slot))
     if lock:
@@ -531,9 +564,11 @@ def cancel_appointment(db: Session, confirmation_id: str, confirm_charge: bool =
         + (f" A charge of Rs.{charge} applies." if charge else ""),
         confirmation_id,
     )
-    return {"success": True, "confirmation_id": confirmation_id, "charge_inr": charge}
+    return {"success": True, "confirmation_id": confirmation_id, "charge_inr": charge,
+            "refund_eligibility": eligibility, "refund_percent": percent}
 
 
+# story: "Caller moves an existing appointment"
 def reschedule_appointment(db: Session, confirmation_id: str, new_date: str, new_time_slot: str) -> dict:
     """Holds the NEW slot first; only once that succeeds is the old one
     touched at all. A failed hold returns immediately with the original
@@ -545,10 +580,14 @@ def reschedule_appointment(db: Session, confirmation_id: str, new_date: str, new
 
     hold = hold_slot(db, appt.doctor_id, new_date, new_time_slot)
     if not hold["success"]:
+        # Same shape as the hold refusal: the nearest free times THAT day, and the same time on
+        # the nearest other day with its date kept, so the reply can name the day.
+        alternatives = nearest_alternatives(db, appt.doctor_id, new_date, new_time_slot)
         return {
             "success": False,
             "reason": "slot_taken",
-            "alternative_slots": available_slots(db, appt.doctor_id, new_date)[:3],
+            "alternative_slots": [a["time_slot"] for a in alternatives if a["date"] == new_date],
+            "other_day_slot": next((a for a in alternatives if a["date"] != new_date), None),
         }
 
     doctor = db.get(Doctor, appt.doctor_id)
@@ -663,14 +702,80 @@ def lookup_bookings(
         doctor = db.get(Doctor, a.doctor_id)
         out.append(
             {
+                "kind": "appointment",
                 "confirmation_id": a.confirmation_id,
                 "doctor_name": doctor.name if doctor else None,
+                "doctor_name_bn": _alias(doctor.aliases_bn) if doctor else None,
+                "doctor_name_hi": _alias(doctor.aliases_hi) if doctor else None,
                 "date": a.date,
                 "time_slot": a.time_slot,
                 "patient_name": a.patient_name,
             }
         )
+
+    # story: "Caller asks what they have booked"
+    #
+    # A lab test is a TestBooking row, not an Appointment, and its confirmation_id lives in a
+    # different table (see resend_confirmation below, which already has to look in both). Until
+    # now this function queried appointments only, so a caller who had booked a blood test and
+    # asked what they had booked was told there was nothing -- about a booking that exists.
+    #
+    # Several tests booked in one call share a booking_group_id and ONE confirmation_id
+    # (models.TestBooking), so they are collapsed back into one spoken item here rather than
+    # read out as three separate bookings.
+    #
+    # `time_slot` is None and stays None: a test booking records a DATE and no time. The reply
+    # must say nothing about a time rather than invent one.
+    out.extend(_test_booking_items(db, phone, confirmation_id, name, upcoming_only, asking_as, require_auth))
+
+    # One timeline, earliest first. A booking with no time sorts before a timed one on the same
+    # day, which is the only honest order when the time is unknown.
+    out.sort(key=lambda b: (b["date"], b.get("time_slot") or ""))
     return out
+
+
+def _test_booking_items(
+    db: Session,
+    phone: str | None,
+    confirmation_id: str | None,
+    name: str | None,
+    upcoming_only: bool,
+    asking_as: str | None,
+    require_auth: bool,
+) -> list[dict]:
+    """The caller's upcoming TEST bookings, one item per confirmation_id. Same filters and the
+    same per-row authorisation as the appointment half above -- a lab test is as personal as a
+    consultation, so the disclosure rule cannot be looser here."""
+    q = db.query(TestBooking).filter(TestBooking.status == "confirmed")
+    if confirmation_id:
+        q = q.filter(TestBooking.confirmation_id == confirmation_id)
+    if phone:
+        q = q.filter((TestBooking.phone == phone) | (TestBooking.caller_phone == phone))
+    if name:
+        q = q.filter(TestBooking.patient_name.ilike(f"%{name}%"))
+    if upcoming_only:
+        q = q.filter(TestBooking.date >= _now().date().isoformat())
+
+    grouped: dict[str, dict] = {}
+    for tb in q.order_by(TestBooking.date).all():
+        if require_auth:
+            patient = db.get(Patient, tb.patient_id) if tb.patient_id else None
+            if not patient or not asking_as or not authorize_disclosure(db, patient, asking_as):
+                continue
+        item = grouped.setdefault(
+            tb.confirmation_id,
+            {
+                "kind": "test",
+                "confirmation_id": tb.confirmation_id,
+                "test_names": [],
+                "date": tb.date,
+                "time_slot": None,
+                "patient_name": tb.patient_name,
+            },
+        )
+        if tb.lab_test is not None and tb.lab_test.name not in item["test_names"]:
+            item["test_names"].append(tb.lab_test.name)
+    return list(grouped.values())
 
 
 # ============================================================ tests

@@ -14,13 +14,22 @@ probe() {  # probe <name> <url>
     fi
 }
 
-echo "== services =="
+# Same source of truth start_all.sh uses (deploy/env.sh), without sourcing the whole file.
+if [ -f /workspace/.voice_agent_languages ]; then
+    VOICE_AGENT_LANGUAGES=$(tr -d ' \r\n' < /workspace/.voice_agent_languages)
+fi
+VOICE_AGENT_LANGUAGES=${VOICE_AGENT_LANGUAGES:-bn,hi,en}
+
+echo "== services (languages: $VOICE_AGENT_LANGUAGES) =="
 probe ollama      "http://localhost:11434/api/tags"
 probe tts         "http://localhost:8002/health"
 probe clinic-api  "http://localhost:8080/api/health"
 probe voice-agent "http://localhost:8100/api/health"
 probe voice-pcm   "http://localhost:8101/api/health"
-probe english-asr "http://localhost:8003/health"
+case ",${VOICE_AGENT_LANGUAGES:-bn,hi,en}," in
+    *,en,*) probe english-asr "http://localhost:8003/health" ;;
+    *) printf '  %-13s off   (VOICE_AGENT_LANGUAGES=%s)\n' english-asr "${VOICE_AGENT_LANGUAGES}" ;;
+esac
 
 echo
 echo "== resident models =="

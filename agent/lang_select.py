@@ -1,6 +1,8 @@
 """Choosing the language of a turn when language ID alone is not enough.
 
-Measured on the pod (docs/adr/0002 records the numbers): SpeechBrain
+Measured on the pod (the numbers are recorded in the constants below and in
+docs/pod-verification-checklist.md; docs/adr/0002 covers the turn-by-turn reply
+language, early language ID and the ambiguity hand-off built on them): SpeechBrain
 VoxLingua107 separates Bengali from Hindi and Hindi from Bengali well, but
 Indian-accented ENGLISH is routinely labelled Hindi, at high confidence. A
 confident-looking wrong answer is worse than an unsure one: the router
@@ -19,6 +21,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from agent.lid import DEFAULT_CONFIDENCE_FLOOR, SUPPORTED_LANGUAGES, LIDResult
 from agent.speech_norm import unspeakable_spans
 
 _SCRIPT_RANGE = {"bn": ("ঀ", "৿"), "hi": ("ऀ", "ॿ")}
@@ -157,6 +160,28 @@ def english_word_share(text: str) -> float:
 
 # Leaving the language the call has been in needs language ID to believe the new one, not merely allow it.
 SWITCH_MIN_LID = 0.50
+
+# A recogniser whose two decoders agree at least this much is convincing. Same measurement as ENGLISH_MIN_AGREEMENT:
+# a decoder pair trained on the speech's own language agrees 0.67-1.00, the wrong one 0.00-0.67. REASONED from a small
+# synthetic sample, not calibrated on telephony.
+CONVINCING_MIN_AGREEMENT = 0.6
+
+
+def lid_is_unsure(lid: LIDResult, active: tuple[str, ...], floor: float = DEFAULT_CONFIDENCE_FLOOR) -> bool:
+    """Language ID did not settle this turn on its own: no language of ours, below the confidence floor, or a
+    second language carrying real probability (languages_to_verify)."""
+    if lid.language not in SUPPORTED_LANGUAGES or lid.confidence < floor:
+        return True
+    return bool(lid.scores) and languages_to_verify(lid.language, lid.scores, active) is not None
+
+
+def outcome_is_ambiguous(lid: LIDResult, result: _Recognition, active: tuple[str, ...]) -> bool:
+    """The turn left the call guessing at its language: language ID was unsure AND the recogniser that won is not
+    convincing either (no text, or its decoders disagree). One without the other is not ambiguity -- a short "yes"
+    gets a low language-ID score yet reads cleanly, and a confident label over a garbled transcript is a
+    transcript problem (agent/transcript_rules), not a language one. Feeds ASRLanguageRouter.note_turn_outcome."""
+    unconvincing = not (result.text or "").strip() or result.decoder_agreement < CONVINCING_MIN_AGREEMENT
+    return unconvincing and lid_is_unsure(lid, active)
 
 
 class _Recognition(Protocol):

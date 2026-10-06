@@ -43,6 +43,17 @@ class FakeTools:
         self.holds.append((doctor, date, slot))
         return {"success": True, "hold_token": f"hold-{len(self.holds)}", "doctor_id": 7}
 
+    async def get_doctor_availability(self, doctor, date):
+        # "Caller names only a doctor": the offer reads when the doctor next sits.
+        return {"found": True, "doctor_name": doctor, "doctor_name_bn": doctor,
+                "doctor_name_hi": doctor, "date": "2026-10-01", "available": True,
+                "chamber_hours": "10:00-12:00", "next_available_date": "2026-10-01"}
+
+    async def doctor_earliest(self, doctor):
+        return {"found": True, "available": True, "doctor_name": doctor, "doctor_name_bn": doctor,
+                "doctor_name_hi": doctor, "date": "2026-10-01", "time_slot": "10:00",
+                "alternatives": ["10:15", "10:30"]}
+
     async def booking_conflict(self, phone, date, slot):
         self.conflicts.append((phone, date, slot))
         return {"conflict": False}
@@ -146,7 +157,13 @@ def text_of(said):
 @pytest.mark.asyncio
 async def test_a_booking_is_collected_with_grouped_questions(m, env):
     said = await book(env, doctor_name="Sen")
-    assert ASK_DAY_TIME in text_of(said)  # the doctor is known: day and time together
+    # DELIBERATE SPEC CHANGE (story "Caller names only a doctor"): the grouped day+time question
+    # is now the doctor OFFER -- it confirms the doctor, says when they next sit, and asks the
+    # day and the time in the same breath. Still one grouped question, better informed; a caller
+    # who knows only a doctor is no longer asked to guess a date.
+    offer = text_of(said)
+    assert "Sen" in offer and "next sitting" in offer and "2026-10-01" in offer
+    assert "what time" in offer.lower()
     said = await env.say("tomorrow at ten", "book_appointment", {"date": "2026-10-01", "time_slot": "10:00"})
     assert ASK_DETAILS in text_of(said)  # then the name and number together
     said = await env.say("Ravi Das 9876543210", "book_appointment", {"patient_name": "Ravi Das", "phone": "9876543210"})

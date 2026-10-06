@@ -39,6 +39,19 @@ from typing import Any, Protocol
 
 SUPPORTED_LANGUAGES = ("bn", "hi", "en")
 
+
+def parse_active_languages(raw: str | None) -> tuple[str, ...]:
+    """The languages a build serves, from VOICE_AGENT_LANGUAGES ("bn,hi,en").
+
+    The ONE definition of the rollback lever (upgrade-prompt section 9): the orchestrator, the TTS server and
+    deploy/start_all.sh all read the same variable, so "bn" alone means Bengali only everywhere -- no language
+    ID, no Hindi ASR, no English ASR process, no Hindi/English voices. Bengali is always active (it is the
+    clinic's primary language and the greeting language); an unknown code is ignored, never guessed at; order
+    follows SUPPORTED_LANGUAGES so the result does not depend on how the variable was typed."""
+    asked = {x.strip().lower() for x in (raw if raw is not None else ",".join(SUPPORTED_LANGUAGES)).split(",")}
+    return tuple(lang for lang in SUPPORTED_LANGUAGES if lang == "bn" or lang in asked)
+
+
 # Below this, a single LID pass is not trusted to route ASR on its own.
 DEFAULT_CONFIDENCE_FLOOR = 0.55
 
@@ -234,6 +247,17 @@ class ASRLanguageRouter:
       - After DEFAULT_MAX_AMBIGUOUS_STREAK consecutive ambiguous turns in
         the same call, stop guessing and hand off to a human.
 
+    The streak above only counts while there is no prior, so on its own it
+    can never fire after the first turn. `note_turn_outcome` is the other
+    half: the orchestrator reports, per turn, whether language ID was unsure
+    AND the recogniser that won was not convincing either (see
+    agent/lang_select.outcome_is_ambiguous). That streak survives a prior,
+    and hands off after the same number of consecutive turns -- "repeated
+    ambiguity within the same call" regardless of how many turns came
+    before it. A turn that is only one of the two (a short "yes" whose
+    language ID is low but whose decoders agree) is not ambiguous and
+    resets it.
+
     One instance per call (it holds per-call state); do not share across
     concurrent calls.
     """
@@ -247,6 +271,23 @@ class ASRLanguageRouter:
         self.max_ambiguous_streak = max_ambiguous_streak
         self._previous_language: str | None = None
         self._ambiguous_streak = 0
+        self._unconvinced_streak = 0
+
+    def note_turn_outcome(self, ambiguous: bool) -> RoutingDecision | None:
+        """Report whether the turn that just ran was ambiguous. Returns a
+        `handoff_human` decision once more than `max_ambiguous_streak` turns
+        in a row were; None otherwise. A clear turn resets the count."""
+        if not ambiguous:
+            self._unconvinced_streak = 0
+            return None
+        self._unconvinced_streak += 1
+        if self._unconvinced_streak > self.max_ambiguous_streak:
+            return RoutingDecision(
+                action="handoff_human",
+                language=None,
+                reason=f"{self._unconvinced_streak} consecutive turns where language ID and the recogniser were both unsure",
+            )
+        return None
 
     def route(self, lid: LIDResult) -> RoutingDecision:
         if lid.language in SUPPORTED_LANGUAGES and lid.confidence >= self.confidence_floor:

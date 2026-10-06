@@ -846,6 +846,11 @@ def book_appointment(req: BookingRequest, db: Session = Depends(get_db)):
 
     valid_slots = _generate_slots(sched.start_time, sched.end_time)
     if req.time_slot not in valid_slots:
+        # story: "Requested slot is already taken" -- NOT served here, deliberately.
+        # This is the pre-E26 endpoint the voice agent no longer calls (SlotLock cannot
+        # see it, per this module's own note), and these are the first free slots, not the
+        # nearest to the time asked. The live path is /bookings/hold below, which offers
+        # the nearest.
         return {"success": False, "reason": "slot_taken", "alternative_slots": valid_slots[:3]}
 
     hold = bs.hold_slot(db, doctor.id, req.date, req.time_slot)
@@ -979,6 +984,7 @@ def _validate_doctor_slot(db: Session, doctor: Doctor, date_str: str, time_slot:
     return None
 
 
+# story: "Requested slot is already taken"
 @app.post("/api/v1/bookings/hold")
 @idempotent("bookings.hold")
 def hold_booking(req: HoldRequest, db: Session = Depends(get_db)):
@@ -1002,9 +1008,16 @@ def hold_booking(req: HoldRequest, db: Session = Depends(get_db)):
 
     result = bs.hold_slot(db, doctor.id, req.date, req.time_slot)
     if not result["success"]:
-        result["alternative_slots"] = [
-            a["time_slot"] for a in bs.nearest_alternatives(db, doctor.id, req.date, req.time_slot)
-        ]
+        # nearest_alternatives returns the nearest free time THAT DAY and the same time on the
+        # nearest OTHER day, each carrying its own date. Flattening both to bare times used to
+        # drop the day, so the other-day slot was spoken inside "these times are free" as though
+        # it were the day the caller asked for -- they could accept a slot on a day they never
+        # agreed to. `alternative_slots` keeps its name and shape (same-day times) for every
+        # existing reader; the other day travels separately, with its date intact.
+        alternatives = bs.nearest_alternatives(db, doctor.id, req.date, req.time_slot)
+        result["alternative_slots"] = [a["time_slot"] for a in alternatives if a["date"] == req.date]
+        other = next((a for a in alternatives if a["date"] != req.date), None)
+        result["other_day_slot"] = other
     else:
         result["doctor_id"] = doctor.id
         result["doctor_name"] = _doctor_ref(db, doctor)
@@ -1046,6 +1059,7 @@ class RescheduleRequest(BaseModel):
     new_time_slot: str
 
 
+# story: "Caller moves an existing appointment"
 @app.post("/api/v1/bookings/reschedule")
 @idempotent("bookings.reschedule")
 def reschedule_booking(req: RescheduleRequest, db: Session = Depends(get_db)):
@@ -1064,6 +1078,7 @@ class CancelRequest(BaseModel):
     confirm_charge: bool = False
 
 
+# story: "Caller cancels an appointment"
 @app.post("/api/v1/bookings/cancel")
 @idempotent("bookings.cancel")
 def cancel_booking(req: CancelRequest, db: Session = Depends(get_db)):

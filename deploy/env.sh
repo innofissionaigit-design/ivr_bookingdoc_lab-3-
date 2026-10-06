@@ -78,25 +78,34 @@ export SILERO_VAD_REPO=/workspace/silero-vad
 # OLLAMA_INSTALL_DIR and writes to /usr/local, on the ephemeral overlay).
 export PATH=/workspace/bin:/workspace/venv/bin:${PATH:-}
 
-# ---- live language routing (main.py) --------------------------------------
-# "bn" alone = the original Bengali-only path (no language ID, no Hindi ASR
-# loaded): the rollback lever if the 3-language path misbehaves.
+# ---- live language routing (main.py, tts_server.py, start_all.sh) ----------
+# THE rollback lever (upgrade prompt section 9). "bn" alone = Bengali only, everywhere:
+#   * main.py / main_pcm.py: no language ID, no Hindi or English ASR loaded, replies in Bengali;
+#   * deploy/start_all.sh: the English ASR process is not started (and is stopped on a forced restart);
+#   * tts_server.py: only the Bengali voice is loaded.
+# One setting, no code revert, no redeploy of old code:
+#     bash /workspace/kolkata-care-voice-agent/deploy/set_languages.sh bn          # roll back
+#     bash /workspace/kolkata-care-voice-agent/deploy/set_languages.sh bn,hi,en    # restore
+# which writes the persistent file below (so the choice survives a pod restart, like the token
+# files) and restarts the stack. The file wins over the environment variable.
+if [ -f /workspace/.voice_agent_languages ]; then
+    VOICE_AGENT_LANGUAGES=$(tr -d ' \r\n' < /workspace/.voice_agent_languages)
+fi
 export VOICE_AGENT_LANGUAGES=${VOICE_AGENT_LANGUAGES:-bn,hi,en}
 # Where the SpeechBrain VoxLingua107 LID model lives (persistent, ~86 MB).
 export VOICE_AGENT_LID_DIR=/workspace/lid_model
 
 # ---- pronunciation lexicon (agent/pronunciation.py) -----------------------
-# A live call (2026-09-28): the blood-test-list reply was blocked outright --
-# every clause names English lab terms ("Sugar", "Calcium", "Lipid Profile",
-# "Widal Test"...) that already have a curated Bengali/Hindi spoken form in
-# the lexicon, but that module's own sign-off gate keeps every entry silent
-# until a native listener approves it (REVIEWED is empty -- nobody has done
-# that pass yet). Until sign-off happens, PRONUNCIATION_ALLOW_DRAFT=1 is the
-# module's own documented "listening aid": it lets the draft pronunciations
-# through so the pilot can be heard and tested end-to-end. Per its docstring
-# this is NOT a release setting -- flip it off (or do the native review, see
-# agent/pronunciation.review_sheet()) before a real launch.
-export PRONUNCIATION_ALLOW_DRAFT=${PRONUNCIATION_ALLOW_DRAFT:-1}
+# OFF by default (upgrade prompt section 7; docs/adr/0002). Every entry in the lexicon is an
+# unreviewed first pass by a non-native speaker (REVIEWED is empty); a wrong pronunciation of a
+# clinical term is the same class of failure as a wrong fact, so it is not spoken silently.
+# Consequence while it is off: a reply naming an English lab term with no approved spoken form is
+# BLOCKED (agent/tts.py UnspeakableTextError) and the caller hears the system-busy fallback --
+# e.g. the blood-test-list reply of the live call of 2026-09-28.
+# To HEAR the drafts on a pod, so a native listener can review them (agent/pronunciation.review_sheet()),
+# start with PRONUNCIATION_ALLOW_DRAFT=1 in the environment. main.py logs a warning whenever it is on.
+# It is a listening aid, never a release setting. The way out of it is the native review, not a default.
+export PRONUNCIATION_ALLOW_DRAFT=${PRONUNCIATION_ALLOW_DRAFT:-0}
 
 # ---- admission control (agent/admission.py) -------------------------------
 # Cap is per process; the WebM and PCM services each count their own calls.
