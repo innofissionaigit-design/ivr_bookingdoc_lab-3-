@@ -96,3 +96,11 @@ golden_buckets = OutcomeCounter()
 # near zero -- templates are written to at most one apology; a rising count means a
 # reply-assembly path is composing two.
 apology_events = OutcomeCounter()
+
+# ADDED BY SOURAV: story "Caller has reached the hospital by mistake". How often the unrelated-caller path fires, and how it ended, so these
+# calls can be watched on their own and never mixed into the hospital-service numbers. `key` is the stage ("first" = polite reply and one
+# more chance, "closed" = polite close on the second consecutive turn, "vetoed" = the model said unrelated but the turn carried a hospital
+# cue so it was NOT treated as unrelated, "skipped_active_flow" = ignored because a booking/home-collection/history step was in progress),
+# `intent` is reused as the SOURCE ("rule" for the deterministic wrong-number / named-person cues, "llm" for the model's intent), `lang`
+# is the call's language. Counts only: no caller text is ever recorded here.
+unrelated_caller_events = OutcomeCounter()

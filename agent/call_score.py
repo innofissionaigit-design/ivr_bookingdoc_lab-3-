@@ -110,6 +110,11 @@ class CallSignals:
     complaint_filed: bool = False
     ended_by_caller: bool = False
     emergency: bool = False
+    # ADDED BY SOURAV: story "Caller has reached the hospital by mistake" -- a wrong-number / unrelated call. Set when the unrelated
+    # path fires and cleared again if the caller then makes a genuine hospital request (main.py), so only a call that REMAINED
+    # unrelated is flagged. Such a call is left unscored (see score_call): it is not a hospital-service call, so it must not
+    # count as a "happy" one, and equally must not drag the happiness average down.
+    unrelated_caller: bool = False
     reply_ms: list[int] = field(default_factory=list)  # first-audio time of each turn, milliseconds
 
     def note(self, name: str, n: int = 1) -> None:
@@ -160,6 +165,10 @@ def band_for(score: int) -> str:
 def score_call(s: CallSignals) -> ScoreResult:
     if s.emergency:
         return ScoreResult(None, "unscored", (), reason="emergency")  # a satisfaction number means nothing here
+    # ADDED BY SOURAV: checked BEFORE the length rule, so a one-turn and a two-turn wrong number both land in the same
+    # "unrelated_caller" bucket of the satisfaction summary's unscored_reasons instead of being split between "too_short" and a score.
+    if s.unrelated_caller:
+        return ScoreResult(None, "unscored", (), reason="unrelated_caller")
     if s.turns < MIN_TURNS_TO_SCORE:
         return ScoreResult(None, "unscored", (), reason="too_short")
     moved: list[tuple[str, int]] = []

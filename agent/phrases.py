@@ -377,6 +377,18 @@ PHRASES["bn"]["test_prep_no_booking_found"] = "ওই নম্বরে কো�
 PHRASES["hi"]["test_prep_no_booking_found"] = "उस नंबर से मुझे कोई टेस्ट बुकिंग नहीं मिली।"
 PHRASES["en"]["test_prep_no_booking_found"] = "I couldn't find a test booking with that number."
 
+# ADDED BY SOURAV: story "Caller has reached the hospital by mistake". Two fixed, reviewed lines per language for a caller who is
+# clearly not asking for any hospital service (a wrong number, a chat meant for someone else). Short, neutral, never judging, and
+# NEVER asking for a name, number, ID, date of birth, address or anything else personal. `unrelated_first` leaves the door open for one
+# more turn (a genuine request after it is served normally); `unrelated_final` is the polite close on the second consecutive
+# unrelated turn (main.py _handle_unrelated_caller). Fixed text only: no model ever writes on this path.
+PHRASES["bn"]["unrelated_first"] = "ঠিক আছে, কোনো সমস্যা নেই। হাসপাতালের কোনো সাহায্য লাগলে আমি এখানে আছি।"
+PHRASES["hi"]["unrelated_first"] = "ठीक है, कोई बात नहीं। अस्पताल से जुड़ी कोई मदद चाहिए हो तो मैं यहाँ हूँ।"
+PHRASES["en"]["unrelated_first"] = "No problem. If you need any help with the hospital, I am here."
+PHRASES["bn"]["unrelated_final"] = "ঠিক আছে, কোনো সমস্যা নেই। ধন্যবাদ, ভালো থাকবেন।"
+PHRASES["hi"]["unrelated_final"] = "ठीक है, कोई बात नहीं। धन्यवाद, अपना ख़याल रखिए।"
+PHRASES["en"]["unrelated_final"] = "No problem. Thank you, goodbye."
+
 # Spoken when a call is turned away before the caller has said a word, so
 # there is no language to choose: all three, shortest first is not worth the
 # complexity -- they are pre-synthesized and cached, so this costs no GPU

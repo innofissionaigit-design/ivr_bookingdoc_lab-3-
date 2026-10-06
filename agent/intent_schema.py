@@ -18,6 +18,7 @@ typed objects, and only those objects are used downstream. What the schema does:
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
@@ -39,6 +40,19 @@ Intent = Literal[
     "add_test_booking",
     "resend_confirmation",
     "department_query",
+    # ADDED BY SOURAV: KCD-387 full flow -- a caller asking whether a specific test (or whatever
+    # they already have booked) can be collected at home, or who wants to arrange that visit, is a
+    # distinct actionable intent from "clinic_faq"/faq_topic="home_collection" (a context-free "do
+    # you offer this?" question with nothing to act on yet) -- see llm.py's prompt rule for exactly
+    # how the two are told apart, and agent/fast_path.py's own home_collection guard for why a
+    # caller who names a test or a pincode is never allowed to be answered by the generic FAQ path.
+    "home_collection",
+    # ADDED BY SOURAV: story "Caller has reached the hospital by mistake". A caller who is CLEARLY not asking for any hospital
+    # service (a wrong number, a chat meant for a friend, a request for a person by name). Deliberately NOT `smalltalk` (which keeps
+    # the call open and may carry a model-written reply), NOT `unclear` (which means "I could not understand you") and NOT abuse
+    # (its own deterministic guard). It carries no slots and no reply: the words spoken are fixed phrases (agent/phrases.py), and
+    # main.py double-checks the answer against agent/unrelated_caller.py's hospital veto before it is ever acted on.
+    "unrelated_caller",
 ]
 VALID_INTENTS: frozenset[str] = frozenset(get_args(Intent))
 
@@ -71,9 +85,27 @@ SLOT_KEYS: tuple[str, ...] = (
     "spelled_letters",
     "symptom_description",
     "faq_topic",
+    # ADDED BY SOURAV: KCD-387 full flow slots. "postal_code" gets its own normaliser (a bare
+    # 6-digit PIN, never free text) below; "address_line"/"landmark" are plain spoken text, the
+    # same discipline every other free-text slot here already uses -- no new NLP parser, per the
+    # story's own "do not build an unnecessarily complex address parser" rule. The slot the caller
+    # uses to pick a home-collection time window deliberately reuses the existing "time_slot" key
+    # rather than inventing a parallel one -- same "reuse existing slots" rule the story asks for.
+    "postal_code",
+    "address_line",
+    "landmark",
 )
-_TEXT_SLOTS = tuple(k for k in SLOT_KEYS if k not in ("test_names", "patient_age", "spelled_letters", "faq_topic"))
+_TEXT_SLOTS = tuple(
+    k
+    for k in SLOT_KEYS
+    if k not in ("test_names", "patient_age", "spelled_letters", "faq_topic", "postal_code")
+)
 _MAX_AGE = 130
+# ADDED BY SOURAV: a postal code is exactly 6 digits (Indian PIN) -- anything else is not a
+# location fact worth acting on, never truncated/padded/guessed into shape. A standalone run of
+# digits, not any 6-digit substring of a longer run (so a stray 7-digit number is correctly
+# rejected rather than silently truncated to its first six digits).
+_DIGIT_RUN_RE = re.compile(r"\d+")
 
 
 def normalize_age(value: Any) -> int | None:
@@ -114,6 +146,11 @@ class Slots(BaseModel):
     spelled_letters: list[str] | None = None
     symptom_description: str | None = None
     faq_topic: str | None = None
+    # ADDED BY SOURAV: KCD-387 full flow -- see SLOT_KEYS' own comment above for why these three
+    # and not more.
+    postal_code: str | None = None
+    address_line: str | None = None
+    landmark: str | None = None
 
     @field_validator(*_TEXT_SLOTS, mode="before")
     @classmethod
@@ -151,6 +188,18 @@ class Slots(BaseModel):
     @classmethod
     def _faq(cls, v: Any) -> str | None:
         return v if isinstance(v, str) and v in FAQ_TOPICS else None  # an invented topic key is nulled, not passed on
+
+    @field_validator("postal_code", mode="before")
+    @classmethod
+    def _postal_code(cls, v: Any) -> str | None:
+        # ADDED BY SOURAV: the model may copy surrounding words/punctuation along with the digits
+        # ("pincode 700091", "৭০০০৯১"-as-ASCII-digits, etc.) -- only a clean 6-digit PIN is ever
+        # treated as a location fact; anything else (5 digits, 7 digits, no digits) is dropped to
+        # null rather than truncated/padded/guessed, the same discipline normalize_age uses.
+        if not isinstance(v, str):
+            return None
+        six_digit_runs = [run for run in _DIGIT_RUN_RE.findall(v) if len(run) == 6]
+        return six_digit_runs[0] if len(six_digit_runs) == 1 else None
 
 
 class IntentExtraction(BaseModel):
