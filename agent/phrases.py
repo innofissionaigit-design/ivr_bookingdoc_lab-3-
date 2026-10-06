@@ -81,12 +81,6 @@ PHRASES: dict[str, dict[str, str]] = {
         # confirmation, and never the generic tool_failure apology either,
         # since the write likely DID happen and a retry could double-book.
         "booking_hold_for_verification": "আপনার বুকিংটা প্রসেস হচ্ছে, একটু দেখে নিশ্চিত করছি।",
-        # KCD-382, story "Caller has several tests with conflicting preparation", AC3: spoken BEFORE
-        # main._handoff_to_human, the same two-step shape as "booking_hold_for_verification" above, for the
-        # one case merge_prep_instructions() cannot safely resolve on its own (a mutually exclusive SOP, or a
-        # resolved test whose structured fasting data is still incomplete -- see that function's docstring).
-        # Never says WHY in clinical terms -- that would be the model, or this file, inventing a reason.
-        "test_prep_conflict_handoff": "এই টেস্টগুলোর প্রস্তুতি একসাথে নিশ্চিতভাবে বলতে পারছি না। আমি আপনাকে আমাদের স্টাফের সাথে যুক্ত করছি।",
         # Empathetic re-asks, spoken BEFORE any hand-off when the caller could
         # not be heard or understood (agent/reask_policy.py). The wording
         # takes the blame ("that's on me"), never the caller's -- a person who
@@ -158,7 +152,6 @@ PHRASES: dict[str, dict[str, str]] = {
         # comparing against a guessed second item would state a difference that was never computed from real data.
         "compare_need_two": "किन दो चीज़ों की तुलना करनी है, दोनों नाम बताएँगे?",
         "booking_hold_for_verification": "आपकी बुकिंग प्रोसेस हो रही है, मैं अभी पुष्टि करके बताती हूँ।",
-        "test_prep_conflict_handoff": "मैं इन टेस्ट की तैयारी को पक्के तौर पर एक साथ नहीं बता पा रही। मैं आपको हमारे स्टाफ़ से जोड़ रही हूँ।",
         "reask_low_volume": "माफ़ कीजिए। आपकी आवाज़ थोड़ी धीमी है। क्या आप थोड़ा ज़ोर से बोलेंगे?",
         "reask_noisy": "माफ़ कीजिए। लाइन पर थोड़ा शोर है। क्या आप शांत जगह से फिर बोलेंगे?",
         "reask_crosstalk": "माफ़ कीजिए। पास से किसी और की आवाज़ आ रही है। क्या आप फिर बोलेंगे?",
@@ -222,7 +215,6 @@ PHRASES: dict[str, dict[str, str]] = {
         # comparing against a guessed second item would state a difference that was never computed from real data.
         "compare_need_two": "Which two should I compare? Please give me both names.",
         "booking_hold_for_verification": "Your booking is being processed, let me confirm it for you.",
-        "test_prep_conflict_handoff": "I'm not able to safely combine the preparation for these tests into one instruction. Let me connect you with our staff.",
         "reask_low_volume": "Sorry. Your voice is a little soft. Could you please speak a little louder?",
         "reask_noisy": "Sorry. There is some noise on the line. Could you try somewhere quieter?",
         "reask_crosstalk": "Sorry. I can hear someone else near you. Could you say that again?",
@@ -354,28 +346,6 @@ PHRASES["en"]["payment_link_sent"] = (
     "Your appointment is booked. A payment link has been sent to your phone -- please pay there to confirm it. "
     "Thank you."
 )
-
-# ---------------------------------------------------------------------------- KCD-382b: registered/booked prep
-# Asked once per call, only when a test_prep turn names no test at all (main.py's test_prep dispatch branch):
-# whether the caller is already registered / has a booking, so a DB-backed caller is never made to repeat test
-# names the booking record already has. Answered deterministically (agent/booking_flow.classify_yes_no), never
-# by the model -- same reasoning as every other yes/no decision point in this file.
-PHRASES["bn"]["test_prep_ask_registered"] = "আপনি কি আগে থেকেই রেজিস্টার্ড পেশেন্ট, নাকি এই টেস্টটা বুক করা আছে?"
-PHRASES["hi"]["test_prep_ask_registered"] = "क्या आप पहले से रजिस्टर्ड मरीज़ हैं, या आपने यह टेस्ट बुक करवाया है?"
-PHRASES["en"]["test_prep_ask_registered"] = "Are you already a registered patient, or have you booked this test with us?"
-
-# Asked right after a "yes" to the question above -- the existing identity key this repository's booking lookups
-# already use (the registered/caller phone number), never a second, invented identity field.
-PHRASES["bn"]["test_prep_ask_booking_phone"] = "যে নম্বর থেকে বুকিং করা হয়েছে, সেটা বলবেন?"
-PHRASES["hi"]["test_prep_ask_booking_phone"] = "आपकी बुकिंग जिस नंबर से की गई है, वह बता देंगे?"
-PHRASES["en"]["test_prep_ask_booking_phone"] = "Could you tell me the phone number your booking is under?"
-
-# No TEST booking matched that number (wrong number, no booking at all, or only an unrelated doctor
-# appointment) -- never invented, never silently merged with something else; the caller is then asked for
-# the test name directly, exactly PATH A's own generic path.
-PHRASES["bn"]["test_prep_no_booking_found"] = "ওই নম্বরে কোনো টেস্ট বুকিং পাইনি।"
-PHRASES["hi"]["test_prep_no_booking_found"] = "उस नंबर से मुझे कोई टेस्ट बुकिंग नहीं मिली।"
-PHRASES["en"]["test_prep_no_booking_found"] = "I couldn't find a test booking with that number."
 
 # Spoken when a call is turned away before the caller has said a word, so
 # there is no language to choose: all three, shortest first is not worth the

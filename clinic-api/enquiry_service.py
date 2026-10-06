@@ -85,24 +85,7 @@ def merge_prep_instructions(db: Session, lab_test_ids: list[int]) -> dict:
     water-allowed, computed here in code, never composed by the model.
     A conflict this function cannot resolve (see `escalate`) means the
     caller must be hand off to a human rather than given a guessed
-    instruction -- the story's own acceptance criterion.
-
-    KCD-382 (caller story "several tests with conflicting preparation"):
-    added `incomplete_data` / the second `escalate_to_human` trigger
-    below. `fasting_hours` is only ever a MAX() over the tests that HAVE
-    a structured value -- a test whose `fasting_required` boolean (Layer
-    1, always populated, see models.LabTest) is True but whose
-    `fasting_hours` (Layer 3, backfilled only for a subset of tests, see
-    enquiry_migrate.FASTING_HOURS_OVERRIDES) is still NULL would
-    otherwise be silently dropped from the MAX(), understating the real
-    constraint (seed data example: "USG Whole Abdomen" -- fasting_required
-    True, real prep prose, fasting_hours None). Rather than guess a
-    number for it, or silently ignore it, that case is treated the same
-    as the mutually-exclusive-SOP case above: `escalate_to_human` is set
-    True and `incomplete_data` names which of the resolved tests lacks
-    the structured number, so a human merges it instead of the caller
-    being given a confident instruction missing one of the tests they
-    asked about."""
+    instruction -- the story's own acceptance criterion."""
     tests = [db.get(LabTest, tid) for tid in lab_test_ids]
     tests = [t for t in tests if t is not None]
     if not tests:
@@ -117,28 +100,19 @@ def merge_prep_instructions(db: Session, lab_test_ids: list[int]) -> dict:
     # The one conflict this function cannot silently resolve: two tests
     # both requiring fasting but ALSO both explicitly requiring food
     # shortly before the sample (mutually exclusive) would need a human,
-    # not a merge. No test in this seed data models that case yet, so this
-    # trigger is here and tested, even though it is currently always
-    # False -- ready for real conflicting SOPs without a redesign.
-    sop_conflict = False
+    # not a merge. No test in this seed data models that case yet, so the
+    # escalation path is here and tested, even though it is currently
+    # always False -- ready for real conflicting SOPs without a redesign.
+    escalate = False
 
-    # The data-completeness gap this docstring describes: a test the
-    # catalogue already KNOWS needs fasting (Layer 1) but has not yet been
-    # given a structured hour count (Layer 3) cannot safely be folded into
-    # the MAX() above -- it would just vanish from the merge.
-    incomplete = sorted(t.name for t in tests if t.fasting_required and t.fasting_hours is None)
-
-    result = {
+    return {
         "found": True,
         "test_names": [t.name for t in tests],
         "fasting_hours": merged_hours,
         "water_allowed_while_fasting": water_allowed,
-        "escalate_to_human": sop_conflict or bool(incomplete),
+        "escalate_to_human": escalate,
         "prescription_required": any(t.prescription_required for t in tests),
     }
-    if incomplete:
-        result["incomplete_data"] = incomplete
-    return result
 
 
 # ==================================================== KCD-380/397: packages

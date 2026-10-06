@@ -94,7 +94,14 @@ price or a doctor's availability. Verified live end to end during the deploy ses
 - **Handle more than one call.** Module-level singletons in one process. No worker pool.
 - **Protect anything.** No auth on any endpoint, no OTP, no audit trail, no consent capture.
 - **Speak anything but Bengali.**
-- **Be interrupted.** No barge-in; the line is half-duplex by design.
+- **Be interrupted by voice, as shipped.** The line is half-duplex by default and a caller
+  cannot talk over the agent. They *can* take the floor by clicking (the button appears while
+  the agent speaks). Acoustic barge-in is built — `agent/echo_cancel.py`,
+  `agent/barge_in.py`, `agent/full_duplex.py` (KCD-051/052) — but it is **off**
+  (`AEC_BARGE_IN=0`, the same default as `voicebot-main`) and wired **only** into
+  `main_pcm.py`, because the canceller needs the far-end reference at an exact sample
+  position that a growing WebM cannot give. It is measured on synthetic echo only; run
+  `tools/echo_eval.py` against real handset audio on the pod before switching it on.
 
 ### Measured numbers — trust these, they were taken on real hardware
 

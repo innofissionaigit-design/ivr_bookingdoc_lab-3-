@@ -64,38 +64,6 @@ def test_prep_merge_endpoint(clinic_client):
     assert result["not_found"] == []
 
 
-def test_prep_merge_endpoint_surfaces_the_escalation_signal(clinic_client):
-    """KCD-382 AC3, at the HTTP boundary: enquiry_service.merge_prep_instructions()'s `escalate_to_human` /
-    `incomplete_data` keys (test_enquiry_service.py proves the logic directly) must reach the voice layer
-    through this endpoint unchanged -- the route forwards the service dict verbatim, so nothing here should
-    strip or recompute them."""
-    result = clinic_client.post(
-        "/api/v1/tests/prep/merge", json={"test_names": ["USG Whole Abdomen"]}
-    ).json()
-    assert result["found"] is True
-    assert result["escalate_to_human"] is True
-    assert result["incomplete_data"] == ["USG Whole Abdomen"]
-    assert result["not_found"] == []
-
-
-def test_prep_merge_endpoint_does_not_guess_an_unresolved_test_name(clinic_client):
-    """An unrecognised test name is reported, never silently dropped or substituted."""
-    result = clinic_client.post(
-        "/api/v1/tests/prep/merge", json={"test_names": ["Blood Sugar Fasting", "Not A Real Test"]}
-    ).json()
-    assert result["not_found"] == ["Not A Real Test"]
-    assert result["found"] is True  # the one resolvable test is still merged...
-    assert result["fasting_hours"] == 8  # ...but the caller-facing reply template treats non-empty
-    # not_found as "ask again" regardless (see agent/reply_templates.py::merged_test_prep_reply), so the
-    # voice layer never speaks a partial merge as if it were complete.
-
-
-def test_prep_merge_endpoint_when_nothing_resolves(clinic_client):
-    result = clinic_client.post("/api/v1/tests/prep/merge", json={"test_names": ["Not A Real Test"]}).json()
-    assert result["found"] is False
-    assert result["not_found"] == ["Not A Real Test"]
-
-
 def test_package_endpoint(clinic_client):
     result = clinic_client.get("/api/v1/packages/Full Body Checkup Basic").json()
     assert result["found"] and result["savings_inr"] > 0

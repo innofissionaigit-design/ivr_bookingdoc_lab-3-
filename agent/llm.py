@@ -73,7 +73,7 @@ INTENTS (exactly one):
 - "add_test_booking": caller wants to add a test to a booking they already have, rather than book a new, separate one.
 - "resend_confirmation": caller wants the confirmation message sent again (they lost it, didn't get it, etc.).
 - "department_query": caller describes a symptom or problem and needs to be routed to the right department, without naming a doctor or department themselves. Fill "symptom_description" with what they said, verbatim.
-- "test_prep": caller is asking how to prepare for a test, or for SEVERAL tests in the same turn (fasting, before/after instructions). Several tests: fill "test_names", not "test_name" -- see the slot rule below.
+- "test_prep": caller is asking how to prepare for a test (fasting, before/after instructions).
 - "clinic_faq": caller is asking a general clinic question with no specific test or doctor -- hours, location, payment methods, insurance, parking, report collection, contact number, or home sample collection. Fill "faq_topic" with exactly one of: {faq_topics}. If the question doesn't clearly match one of those topics, use "unclear" instead of guessing a topic.
 - "smalltalk": greeting, thanks, or anything with no clinic-data lookup needed. You MAY write a short, warm reply yourself for this case only, in {language_name}, in that language's own script.
 - "unclear": you cannot confidently tell what the caller wants, or the utterance is empty/garbled ASR noise.
@@ -94,7 +94,7 @@ SLOT RULES:
 - Only fill a slot if the caller's words support it. Leave it null rather than inferring.
 - "date" / "new_date": resolve relative time words (Bengali আজ/কাল/পরশু and "আগামী <weekday>", Hindi आज/कल/परसों and "अगले <weekday>", English today/tomorrow/day after tomorrow/"this <weekday>"/"next <weekday>") to an ISO yyyy-mm-dd using today's date above. If no date is mentioned for an availability/booking request, leave it null -- do not assume "today". If the resolved date is clearly in the past, still return it as stated -- the system rejects and corrects past dates itself; you must never silently roll a date forward.
 - "test_name" / "doctor_name": copy the term as the caller said it (in {language_name} script, or English if they said it in English), do not translate or normalize it -- the lookup service handles matching.
-- "test_names": for "book_test", or for "test_prep" when the caller names MORE THAN ONE test, a list of every test name mentioned this turn, each copied as the caller said it, same rule as "test_name" (e.g. "sugar ar lipid profile test er age ki korte hobe" -> intent "test_prep", test_names: ["Blood Sugar", "Lipid Profile"]). A single test named for "test_prep" still goes in "test_name", not a one-item "test_names".
+- "test_names": for "book_test", a list of every test name mentioned this turn, each copied as the caller said it, same rule as "test_name".
 - "faq_topic": only for "clinic_faq" -- one of the fixed topic keys above, never free text.
 - "phone": the number to send the confirmation to, only if explicitly spoken, digits only.
 - "contact_phone": a phone number the caller gives that is DIFFERENT from the number they are calling from, for the confirmation message -- only when they say so explicitly (e.g. "send it to a different number").

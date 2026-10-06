@@ -29,7 +29,6 @@ from agent.api_models import (
     IdentifyAnswer,
     LookupAnswer,
     PrepAnswer,
-    PrepMergeAnswer,
     RouteAnswer,
     SuccessAnswer,
     TestAnswer,
@@ -102,28 +101,6 @@ class ClinicToolsClient:
             return validated(PrepAnswer, r.json(), "get_test_prep")
         except (httpx.HTTPError, ValueError) as e:  # ValueError: not JSON, or not the expected shape
             raise ToolCallError(f"get_test_prep({test_name!r}): {e}") from e
-
-    # ---- KCD-382: POST /api/v1/tests/prep/merge (story "Caller has several tests with conflicting preparation")
-    # Resolution and the strictest-constraint merge both happen server-side
-    # (clinic-api/main.py::prep_merge_endpoint -> enquiry_service.merge_prep_instructions) -- this client sends the
-    # names the model copied verbatim from the caller and only validates the shape of what comes back, exactly like
-    # every other tool call here. `lang` is accepted for the same signature shape as get_test_prep even though the
-    # merge endpoint itself is language-neutral (the spoken sentence is composed afterwards, in reply_templates).
-    # Expected response shape:
-    #   found=true:  {"found": true, "test_names": [...], "fasting_hours": 11,
-    #                 "water_allowed_while_fasting": true, "prescription_required": false,
-    #                 "escalate_to_human": false, "not_found": []}
-    #                 -- "escalate_to_human" is also true, with "incomplete_data": [...], when a resolved test is
-    #                 known to need fasting but has no structured hour count yet (never guessed, see the merge
-    #                 function's own docstring).
-    #   found=false: {"found": false}  (none of the requested names resolved)
-    async def merge_test_prep(self, test_names: list[str], lang: str = "bn") -> dict:
-        try:
-            r = await self._client.post("/api/v1/tests/prep/merge", json={"test_names": test_names})
-            r.raise_for_status()
-            return validated(PrepMergeAnswer, r.json(), "merge_test_prep")
-        except (httpx.HTTPError, ValueError) as e:  # ValueError: not JSON, or not the expected shape
-            raise ToolCallError(f"merge_test_prep({test_names!r}): {e}") from e
 
     # ---- Tool 5: GET /api/v1/faq?topic=... ----
     # `topic` is the STABLE KEY from /api/v1/catalogue's faq_topics, already
@@ -530,15 +507,6 @@ class ClinicToolsClient:
         """KCD-497: any combination of phone, name, approx_date, test_name, branch."""
         return await self._post(
             "/api/v1/bookings/search", {"caller_phone": caller_phone, **criteria}, "search_bookings"
-        )
-
-    async def booking_test_names(self, confirmation_id: str) -> dict:
-        """KCD-382b: every real confirmed test name in one booking group -- search_bookings()
-        above only returns one representative test per confirmation_id, never the full set, so
-        the registered/booked-patient preparation path reads it separately, once a single
-        confirmation_id has already been resolved."""
-        return await self._get(
-            f"/api/v1/bookings/{confirmation_id}/tests", {}, "booking_test_names"
         )
 
     async def write_call_event(

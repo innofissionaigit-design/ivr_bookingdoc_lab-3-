@@ -103,39 +103,6 @@ def test_merge_prep_instructions_unknown_test_ids_are_skipped_not_guessed(clinic
         db.close()
 
 
-def test_merge_prep_instructions_escalates_a_test_with_no_structured_fasting_hours(clinic_modules):
-    """KCD-382, story "Caller has several tests with conflicting preparation", AC3 + the partial-data
-    safety requirement: "USG Whole Abdomen" has `fasting_required=True` and real prep prose (seed.py's
-    PREP_OVERRIDES) but no structured `fasting_hours` (it is absent from enquiry_migrate's
-    FASTING_HOURS_OVERRIDES). The merge must never silently drop it from the MAX() and answer as if no
-    fasting were needed -- it must escalate instead, naming the test that could not be safely folded in."""
-    es, db_mod, m = clinic_modules
-    db = db_mod.SessionLocal()
-    try:
-        usg = db.query(m.LabTest).filter_by(name="USG Whole Abdomen").one()
-        assert usg.fasting_required is True and usg.fasting_hours is None  # the data gap this test guards
-
-        result = es.merge_prep_instructions(db, [usg.id])
-        assert result["escalate_to_human"] is True
-        assert result["incomplete_data"] == ["USG Whole Abdomen"]
-
-        # Paired with a test that DOES have a structured number: the known number must not be thrown away,
-        # but the merge as a whole still escalates rather than quietly answering with only part of the facts.
-        sugar = db.query(m.LabTest).filter_by(name="Blood Sugar Fasting").one()  # 8h
-        combined = es.merge_prep_instructions(db, [usg.id, sugar.id])
-        assert combined["escalate_to_human"] is True
-        assert combined["incomplete_data"] == ["USG Whole Abdomen"]
-        assert combined["fasting_hours"] == 8  # the one structured value present is preserved, not discarded
-
-        # A fully-structured pair stays exactly as before -- the new check is additive, never a regression.
-        lipid = db.query(m.LabTest).filter_by(name="Lipid Profile").one()  # 11h
-        clean = es.merge_prep_instructions(db, [sugar.id, lipid.id])
-        assert clean["escalate_to_human"] is False
-        assert "incomplete_data" not in clean
-    finally:
-        db.close()
-
-
 def test_package_comparison_computes_real_savings(clinic_modules):
     es, db_mod, _m = clinic_modules
     db = db_mod.SessionLocal()

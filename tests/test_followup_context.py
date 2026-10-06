@@ -172,18 +172,11 @@ async def test_the_live_conversation_the_test_just_answered_about_is_used_twice(
 
 @pytest.mark.asyncio
 async def test_with_no_earlier_answer_the_agent_still_asks_which_test(m, env, spy):
-    # KCD-382b: the FIRST time in a call that a test_prep turn names nothing and nothing is
-    # remembered, the agent asks whether the caller is registered/has a booking before falling
-    # back to "which test" -- see PATH A/B of the registered/booked-patient preparation story.
     said = await env.say(
         "do I need to fast",
         "test_prep",
         {},
     )
-    assert not spy.calls and "registered" in " ".join(said).lower()
-    # PATH A: caller says no -- never asked for a phone, falls straight through to the existing
-    # generic "which test" ask, exactly as before this story.
-    said = await env.say("no", "unclear", {})
     assert not spy.calls and "which test" in " ".join(said).lower()
 
 
@@ -193,9 +186,6 @@ async def test_a_bare_pointing_answer_the_model_could_not_label_answers_the_ques
     await env.say("price of creatinine", "test_rate", {"test_name": "Serum Creatinine"})
     env.session.last_enquiry_turn -= 20  # long enough ago that it is not assumed
     said = await env.say("do I need to fast", "test_prep", {})
-    # KCD-382b: first ask in this call is the registered/booking question, not "which test" yet.
-    assert "registered" in " ".join(said).lower()
-    said = await env.say("no", "unclear", {})  # PATH A: not registered -- the existing ask follows
     assert "which test" in " ".join(said).lower() and env.session.pending_enquiry is not None
     said = await env.say("the same test", "unclear", {})
     assert spy.calls[-1] == ("test_prep", {"test_name": "Serum Creatinine"})

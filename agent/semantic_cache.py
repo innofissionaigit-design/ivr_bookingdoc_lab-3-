@@ -123,6 +123,21 @@ ENTITY_MATCH_FLOOR = 0.55
 # from a different caller's utterance.
 _PII_SLOTS = ("phone", "patient_name")
 
+# story: "Caller asks what they have booked"
+#
+# Intents whose classification must never be reused on a merely SIMILAR utterance, however high
+# the cosine. `lookup_booking` is here because the sentence it has to be told apart from differs
+# by one word and is otherwise its nearest neighbour in embedding space:
+#
+#     "I want an appointment"   -> book_appointment
+#     "What's my appointment?"  -> lookup_booking
+#
+# Neither carries a PII slot, and neither names a test or a doctor, so _is_l2_eligible's PII rule
+# and _entity_guard both pass them -- nothing else would stop one being served for the other, and
+# the wrong way round the caller gets a SECOND booking instead of hearing the one they have.
+# The cost of excluding it is one model call on a repeated question; L1 (exact) still serves it.
+_L2_EXCLUDED_INTENTS = ("lookup_booking",)
+
 _RE_WS = re.compile(r"\s+")
 _RE_STRIP = re.compile(r"[।?!,.‌‍]+")
 
@@ -195,6 +210,8 @@ class SemanticCache:
 
     @staticmethod
     def _is_l2_eligible(value: dict) -> bool:
+        if (value or {}).get("intent") in _L2_EXCLUDED_INTENTS:
+            return False
         slots = (value or {}).get("slots") or {}
         return not any(slots.get(field) for field in _PII_SLOTS)
 

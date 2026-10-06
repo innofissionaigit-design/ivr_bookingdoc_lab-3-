@@ -34,7 +34,22 @@ CATALOGUE = {
 }
 
 
-class FakeTools:
+class _AvailabilityMixin:
+    """The doctor-availability read the booking flow makes when a caller names a doctor and no
+    day ("Caller names only a doctor"). Fixture only -- no assertion depends on these values."""
+
+    async def get_doctor_availability(self, doctor, date):
+        return {"found": True, "doctor_name": doctor, "doctor_name_bn": doctor,
+                "doctor_name_hi": doctor, "date": "2026-10-01", "available": True,
+                "chamber_hours": "10:00-12:00", "next_available_date": "2026-10-01"}
+
+    async def doctor_earliest(self, doctor):
+        return {"found": True, "available": True, "doctor_name": doctor, "doctor_name_bn": doctor,
+                "doctor_name_hi": doctor, "date": "2026-10-01", "time_slot": "10:00",
+                "alternatives": []}
+
+
+class FakeTools(_AvailabilityMixin):
     """The clinic API surface the new flows use. Records what it was asked."""
 
     def __init__(self):

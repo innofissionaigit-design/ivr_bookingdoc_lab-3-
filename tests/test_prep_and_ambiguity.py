@@ -21,7 +21,6 @@ for p in (REPO_ROOT, os.path.join(REPO_ROOT, "tests")):
         sys.path.insert(0, p)
 
 from agent.fast_path import AMBIGUITY_MARGIN, Catalogue, FastPath
-from agent.reply_templates import merged_test_prep_reply  # noqa: E402
 from agent.reply_templates import test_prep_reply as prep_reply  # (not test_*: pytest would collect it)
 
 TODAY = datetime.date(2026, 9, 25)
@@ -95,84 +94,3 @@ def test_the_tables_own_text_is_spoken_when_it_has_one():
         "en",
     )
     assert "Do not eat for eight hours." in reply
-
-
-# ---------------------------------------------------------------------------------------------------- KCD-382
-# merged_test_prep_reply: story "Caller has several tests with conflicting preparation" (AC2 -- one coherent
-# spoken instruction, never a separate paragraph per test). These are unit tests of the template function
-# alone: it is handed exactly what clinic-api/enquiry_service.py::merge_prep_instructions() would return
-# (forwarded verbatim by agent.tools_client.merge_test_prep), so no clinic app or orchestrator is needed here.
-
-
-@pytest.mark.parametrize("lang", ["bn", "hi", "en"])
-def test_the_merged_reply_is_a_single_sentence_not_one_per_test(lang):
-    result = {
-        "found": True,
-        "test_names": ["Blood Sugar Fasting", "Lipid Profile"],
-        "fasting_hours": 11,
-        "water_allowed_while_fasting": True,
-        "prescription_required": False,
-        "not_found": [],
-    }
-    reply = merged_test_prep_reply(["Blood Sugar Fasting", "Lipid Profile"], result, lang)
-    assert isinstance(reply, str) and reply.count(".") <= 2 and "\n" not in reply
-    assert "11" in reply  # the strictest merged number is actually spoken, not re-derived or omitted
-
-
-@pytest.mark.parametrize("lang", ["bn", "hi", "en"])
-def test_the_merged_reply_names_the_strictest_water_rule(lang):
-    forbids_water = merged_test_prep_reply(
-        ["A", "B"],
-        {
-            "found": True,
-            "test_names": ["A", "B"],
-            "fasting_hours": 8,
-            "water_allowed_while_fasting": False,
-            "prescription_required": False,
-            "not_found": [],
-        },
-        lang,
-    )
-    allows_water = merged_test_prep_reply(
-        ["A", "B"],
-        {
-            "found": True,
-            "test_names": ["A", "B"],
-            "fasting_hours": 8,
-            "water_allowed_while_fasting": True,
-            "prescription_required": False,
-            "not_found": [],
-        },
-        lang,
-    )
-    assert forbids_water != allows_water
-
-
-@pytest.mark.parametrize("lang", ["bn", "hi", "en"])
-def test_a_merged_result_with_no_fasting_requirement_says_so_without_inventing_a_number(lang):
-    result = {
-        "found": True,
-        "test_names": ["CBC", "Thyroid Profile"],
-        "fasting_hours": None,
-        "water_allowed_while_fasting": True,
-        "prescription_required": False,
-        "not_found": [],
-    }
-    reply = merged_test_prep_reply(["CBC", "Thyroid Profile"], result, lang)
-    # No digit anywhere in the spoken reply -- there is no fasting window to state.
-    assert not any(ch.isdigit() for ch in reply)
-
-
-@pytest.mark.parametrize("lang", ["bn", "hi", "en"])
-def test_an_unresolved_test_name_is_never_guessed_into_a_reply(lang):
-    """CLAUDE.md rule 1 + the story's "do not invent medical preparation rules": a name the merge endpoint
-    could not resolve must make the caller re-say the names, never be silently dropped from the sentence."""
-    result = {"found": True, "test_names": ["CBC"], "fasting_hours": None, "not_found": ["Not A Real Test"]}
-    reply = merged_test_prep_reply(["CBC", "Not A Real Test"], result, lang)
-    assert "Not A Real Test" in reply
-
-
-@pytest.mark.parametrize("lang", ["bn", "hi", "en"])
-def test_nothing_resolving_is_also_never_guessed(lang):
-    reply = merged_test_prep_reply(["Not A Real Test"], {"found": False}, lang)
-    assert "Not A Real Test" in reply

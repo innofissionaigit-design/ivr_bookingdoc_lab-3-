@@ -171,7 +171,16 @@ def test_cancel_outside_the_charging_window_is_free(clinic_modules):
         booked = bs.confirm_booking(db, hold["hold_token"], doc.id, date, slot, "X", "111", "111")
 
         result = bs.cancel_appointment(db, booked["confirmation_id"])
-        assert result == {"success": True, "confirmation_id": booked["confirmation_id"], "charge_inr": 0}
+        # DELIBERATE SPEC CHANGE (story "Caller cancels an appointment"): the response now also
+        # carries the refund eligibility the caller is told about, derived from the same policy
+        # row as the charge. Nothing free became charged -- charge_inr is still 0.
+        assert result == {
+            "success": True,
+            "confirmation_id": booked["confirmation_id"],
+            "charge_inr": 0,
+            "refund_eligibility": "full",
+            "refund_percent": None,
+        }
         # the slot must be bookable again
         assert slot in bs.available_slots(db, doc.id, date)
     finally:

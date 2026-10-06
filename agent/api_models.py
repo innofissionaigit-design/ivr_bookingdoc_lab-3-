@@ -71,21 +71,6 @@ class PrepAnswer(FoundAnswer):
     did_you_mean: list[str] | None = None
 
 
-class PrepMergeAnswer(FoundAnswer):
-    """POST /api/v1/tests/prep/merge -- clinic-api/enquiry_service.py::merge_prep_instructions(), KCD-382. The
-    agent never computes the merge itself (CLAUDE.md rule 1): `fasting_hours` is the strictest MAX() the API
-    already took, and `escalate_to_human` (set whenever `incomplete_data` names a resolved test the merge could
-    not safely fold in) is the one signal the voice layer is allowed to act on without re-deriving it."""
-
-    test_names: list[str] | None = None
-    fasting_hours: Number | None = None
-    water_allowed_while_fasting: StrictBool | None = None
-    prescription_required: StrictBool | None = None
-    escalate_to_human: StrictBool | None = None
-    incomplete_data: list[str] | None = None
-    not_found: list[str] | None = None
-
-
 class FaqAnswer(FoundAnswer):
     topic: str | None = None
     answer: str | None = None

@@ -260,27 +260,6 @@ def test_the_client_turns_a_malformed_answer_into_a_tool_failure_never_a_fact(pa
         asyncio.run(_client_answering(payload).get_test_rate("CBC"))
 
 
-def test_the_merge_test_prep_client_returns_the_answer_unchanged_when_it_has_the_right_shape():
-    """KCD-382: agent.tools_client.ClinicToolsClient.merge_test_prep() is a thin, validated pass-through to
-    clinic-api's merge endpoint -- it must not drop or alter the escalation/incomplete-data keys."""
-    body = {
-        "found": True,
-        "test_names": ["USG Whole Abdomen"],
-        "fasting_hours": None,
-        "water_allowed_while_fasting": True,
-        "prescription_required": False,
-        "escalate_to_human": True,
-        "incomplete_data": ["USG Whole Abdomen"],
-        "not_found": [],
-    }
-    assert asyncio.run(_client_answering(body).merge_test_prep(["USG Whole Abdomen"])) == body
-
-
-def test_the_merge_test_prep_client_turns_a_malformed_answer_into_a_tool_failure_never_a_fact():
-    with pytest.raises(ToolCallError):
-        asyncio.run(_client_answering({"escalate_to_human": "yes"}).merge_test_prep(["CBC", "Lipid Profile"]))
-
-
 def test_every_write_the_client_makes_is_checked_too():
     client = _client_answering({"nope": True})
     for call in (

@@ -731,35 +731,3 @@ def search_bookings(
         }
     distinguishing = [f for f in ("date", "doctor_name", "test_name", "time_slot") if len({m[f] for m in matches}) > 1]
     return {"status": "several", "matches": matches, "distinguishing": distinguishing, "ignored_filters": ignored}
-
-
-# ============================================== KCD-382b: registered/booked-patient preparation
-
-
-def booking_test_names(db: Session, confirmation_id: str) -> list[str]:
-    """Every real, confirmed lab-test name in ONE test-booking group (KCD-382b).
-
-    search_bookings() above deliberately collapses a multi-test booking to ONE representative
-    candidate per confirmation_id -- "a multi-test booking is one booking", so disambiguation
-    never double-counts it as several. That is correct for FINDING which booking the caller
-    means, but once the caller's single intended confirmation_id is already resolved (by
-    search_bookings, already authorised against this caller), KCD-382's preparation path needs
-    the FULL set of tests inside it, not just the one representative name -- so this reads every
-    TestBooking row for that id directly.
-
-    No separate authorization check here: a confirmation_id is already the bearer-token
-    identifier this codebase's other booking lookups treat as sufficient on its own (see
-    lookup_bookings()'s own docstring in booking_service.py), and the only caller of this
-    function passes an id that was already returned by an authorised search_bookings() call in
-    the same turn -- never one typed in from outside that flow.
-
-    Confirmed rows only: a cancelled test within an otherwise-confirmed booking group must never
-    reappear in a preparation answer. Order is insertion order (the order the tests were booked
-    in), not alphabetical -- deterministic, but not a claim about clinical priority."""
-    rows = (
-        db.query(TestBooking)
-        .filter(TestBooking.confirmation_id == confirmation_id, TestBooking.status == "confirmed")
-        .order_by(TestBooking.id)
-        .all()
-    )
-    return [r.lab_test.name for r in rows if r.lab_test]

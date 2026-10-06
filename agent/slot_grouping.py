@@ -1,5 +1,8 @@
 """Ask for several booking details in one question, except when the caller's state says one at a time (KCD-103).
 
+story: "Caller names only a doctor" (its "grouped questions" criterion)
+story: "Caller gives everything in one sentence" (nothing already answered is asked again)
+
 THE PROBLEM. `missing_slot_prompt` asked for exactly one field per turn, always. A caller who says "I want to book
 Dr. Sen" was then asked the day, then the time, then the name, then the phone number: five turns and four "who
 are you calling for" pauses to book one appointment. Callers who know all of it were interrogated.

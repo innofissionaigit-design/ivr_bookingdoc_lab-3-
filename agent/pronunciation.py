@@ -153,7 +153,9 @@ ESTABLISHED = frozenset({"blood", "urine", "stool", "serum", "saliva", "swab", "
 ALLOW_DRAFT_ENV = "PRONUNCIATION_ALLOW_DRAFT"
 
 
-def _allow_draft() -> bool:
+def drafts_enabled() -> bool:
+    """Are unreviewed pronunciations being spoken? Off unless PRONUNCIATION_ALLOW_DRAFT=1 -- in the code AND in
+    deploy/env.sh (docs/adr/0002). The orchestrator logs a warning at startup when this is on."""
     return os.environ.get(ALLOW_DRAFT_ENV, "0") == "1"
 
 
@@ -169,7 +171,7 @@ def load_reviewed(path: str) -> int:
 
 def speakable(term: str, lang: str) -> bool:
     key = term.lower()
-    return key in ESTABLISHED or (key, lang) in REVIEWED or _allow_draft()
+    return key in ESTABLISHED or (key, lang) in REVIEWED or drafts_enabled()
 
 
 _INDEX = {"bn": 0, "hi": 1}

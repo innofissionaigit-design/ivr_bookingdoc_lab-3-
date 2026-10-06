@@ -68,6 +68,14 @@ class BookingState:
     # KCD-103: fields the agent has already asked for, so a question that did not land is not repeated as the same
     # long group (agent/slot_grouping.py asks a repeated field alone).
     asked_fields: set = field(default_factory=set)
+    # Transient per-turn bookkeeping, deliberately NOT in `slots`: none of it is the caller's
+    # data, none of it is ever read back or written to the clinic.
+    #   offered_slots   the slots just read out, as [{"date", "time_slot"}], for the caller to pick
+    #   phone_buffer    digits of a number still being read out, group by group
+    #   name_confirmed  the patient name has been heard clearly or spelled, so it needs no readback
+    offered_slots: list = field(default_factory=list)
+    phone_buffer: str = ""
+    name_confirmed: bool = False
 
     def touch(self) -> None:
         self.last_updated = time.monotonic()
@@ -101,6 +109,7 @@ _SLOT_FIELDS = (
 )
 
 
+# story: "Caller gives everything in one sentence"
 def merge_slots(state: BookingState, new_slots: dict) -> list[str]:
     """Folds this turn's non-null slots into the running state. Returns
     the list of field names that actually changed, so main.py can decide
@@ -156,6 +165,111 @@ def is_ready_to_confirm(state: BookingState) -> bool:
     return not missing_required(state) and state.stage == "collecting"
 
 
+# An Indian mobile number, the only shape this clinic books against.
+PHONE_DIGITS = 10
+_TRUNK_PREFIXES = {11: "0", 12: "91"}
+
+
+# story: "Caller cannot give a contact number"
+def normalise_phone(value: str | None) -> str | None:
+    """-> a bare 10-digit number, or None when what was heard is not one yet.
+
+    Accepts the two prefixes a caller actually says out loud -- a leading 0, or 91 -- and nothing
+    else. Anything longer is NOT trimmed to its last ten digits: that is how a time or a date
+    spoken after a number ("9876543210, 10:30") turns into a different person's number."""
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    if len(digits) == PHONE_DIGITS:
+        return digits
+    prefix = _TRUNK_PREFIXES.get(len(digits))
+    if prefix and digits.startswith(prefix):
+        return digits[len(prefix):]
+    return None
+
+
+# story: "Caller cannot give a contact number"
+def merge_digits(state: BookingState, spoken: str | None) -> str | None:
+    """Add this turn's digits to the number being read out, and return it once it is complete.
+
+    A caller on someone else's phone often reads a number in groups, and each group arrives as its
+    own turn. Returns the finished 10-digit number (buffer cleared), or None while it is still
+    short -- the caller is then asked for the rest, with what they already gave kept.
+
+    Over-long is discarded, not truncated: digits that cannot be a number are far more likely a
+    misheard turn than a real number with noise on the end, and guessing which end to cut is how
+    a caller is sent someone else's confirmation."""
+    piece = "".join(ch for ch in str(spoken or "") if ch.isdigit())
+    if not piece:
+        return None
+    buffered = state.phone_buffer + piece
+    state.touch()
+    complete = normalise_phone(buffered)
+    if complete:
+        state.phone_buffer = ""
+        return complete
+    if len(buffered) > max(_TRUNK_PREFIXES):
+        state.phone_buffer = ""  # unusable: start the number again
+        return None
+    state.phone_buffer = buffered
+    return None
+
+
+def phone_digits_so_far(state: BookingState) -> str:
+    return state.phone_buffer
+
+
+# "first / second / third", for picking among slots the agent just read out.
+#
+# Indic forms are matched as substrings -- they are distinctive and take suffixes freely
+# ("প্রথমটা", "দ্বিতীয়টাই"). Latin forms are matched as WHOLE WORDS: matching them loosely read
+# "the second one" as the FIRST (because "one" is in it) and "10:15" as the first (because "1"
+# is in it), so a bare numeral is accepted only as a word of its own, and the clock is checked
+# before any of them.
+_ORDINAL_INDIC = (
+    ("প্রথম", "পহেলা", "पहला", "पहली"),
+    ("দ্বিতীয়", "দুই নম্বর", "दूसरा", "दूसरी"),
+    ("তৃতীয়", "তিন নম্বর", "तीसरा", "तीसरी"),
+)
+_ORDINAL_LATIN = (
+    re.compile(r"\b(?:first|1st|1|pehla|pehli|prothom)\b", re.IGNORECASE),
+    re.compile(r"\b(?:second|2nd|2|dusra|dusri|ditiyo)\b", re.IGNORECASE),
+    re.compile(r"\b(?:third|3rd|3|tisra|tisri|tritiyo)\b", re.IGNORECASE),
+)
+_RE_CLOCK = re.compile(r"\b([01]?\d|2[0-3])[:.]([0-5]\d)\b")
+
+
+# story: "Caller names only a doctor"
+# story: "Caller asks for the earliest available appointment"
+# story: "Requested slot is already taken"
+def pick_offered_slot(text: str, offered: list[dict]) -> dict | None:
+    """The caller's answer to "which one shall I book?" -> the slot they chose, or None.
+
+    Accepts one of the times read out, an ordinal ("প্রথমটা", "the second one"), or a bare yes for
+    the first. None means they said something else -- a day of their own, a question -- and the
+    turn is handled normally rather than guessed at.
+
+    Stories: "Caller names only a doctor" and "Caller asks for the earliest available appointment".
+    """
+    if not offered:
+        return None
+    said = text or ""
+    # The time first: it is the most specific thing the caller can say, and its digits would
+    # otherwise be read as an ordinal.
+    match = _RE_CLOCK.search(said)
+    if match:
+        clock = f"{int(match.group(1)):02d}:{match.group(2)}"
+        for slot in offered:
+            if slot.get("time_slot") == clock:
+                return slot
+    for index in range(min(len(offered), 3)):
+        if any(w in said for w in _ORDINAL_INDIC[index]) or _ORDINAL_LATIN[index].search(said):
+            return offered[index]
+    # A bare yes takes the first -- it is the one the sentence led with.
+    if classify_yes_no(said, "bn") == "yes" or classify_yes_no(said, "en") == "yes":
+        return offered[0]
+    return None
+
+
+# story: "Caller cannot give a contact number"
 def effective_phone(state: BookingState) -> str:
     """The number the confirmation actually goes to: a caller-stated
     contact_phone wins (KCD-370's "a different number for the
@@ -334,6 +448,7 @@ def classify_yes_no(transcript: str, lang: str) -> str | None:
 _LATIN_LETTER = "abcdefghijklmnopqrstuvwxyz"
 
 
+# story: "Patient name is misheard"
 def try_assemble_spelling(letters_spoken: list[str]) -> str | None:
     """KCD-368: a caller spells a name letter by letter. `letters_spoken`
     is whatever agent/llm.py's slot extractor pulled out as individual

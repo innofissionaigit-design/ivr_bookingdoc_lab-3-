@@ -57,6 +57,7 @@ import threading
 # Pure prosody logic (splitting, pauses, trim, normalise) lives in
 # agent/prosody.py so it can be unit tested without a GPU; the repo root is
 # on PYTHONPATH (deploy/env.sh). Imported BEFORE the chdir below.
+from agent.lid import parse_active_languages
 from agent.prosody import (
     ProsodyParams, assemble, resolve_length_scale, resolve_params, split_for_prosody,
 )
@@ -78,7 +79,10 @@ from TTS.utils.synthesizer import Synthesizer
 
 app = FastAPI()
 
-SUPPORTED_LANGUAGES = ("bn", "hi", "en")
+# The voices this process loads: VOICE_AGENT_LANGUAGES (deploy/env.sh), the same variable the orchestrator and
+# deploy/start_all.sh read, so the Bengali-only rollback (deploy/set_languages.sh bn) loads one voice, not three,
+# and an unloaded language is a 422 below, never a silent fall back to another voice.
+SUPPORTED_LANGUAGES = parse_active_languages(os.environ.get("VOICE_AGENT_LANGUAGES"))
 
 
 def _load_synthesizer(lang: str) -> Synthesizer:

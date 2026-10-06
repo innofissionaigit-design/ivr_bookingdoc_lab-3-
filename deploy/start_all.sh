@@ -20,10 +20,13 @@ REPO=/workspace/kolkata-care-voice-agent
 source "$REPO/deploy/env.sh"
 mkdir -p /workspace/logs /workspace/bin
 
+# FORCE_RESTART=1 restarts services that are already up. Without it a service that is up is left alone, which
+# is right for "bring the stack up" and wrong for "I changed VOICE_AGENT_LANGUAGES" (deploy/set_languages.sh).
 start() {  # start <name> <port> <logfile> <command...>
     local name=$1 port=$2 log=$3; shift 3
-    if curl -sf -m 3 "http://localhost:$port/api/health" >/dev/null 2>&1 \
-    || curl -sf -m 3 "http://localhost:$port/health" >/dev/null 2>&1; then
+    if [ "${FORCE_RESTART:-0}" != "1" ] \
+    && { curl -sf -m 3 "http://localhost:$port/api/health" >/dev/null 2>&1 \
+      || curl -sf -m 3 "http://localhost:$port/health" >/dev/null 2>&1; }; then
         echo "  $name already up on :$port"
         return
     fi
@@ -85,11 +88,9 @@ exec /workspace/venv/bin/python3 -m uvicorn main_pcm:app --host 0.0.0.0 --port 8
 EOF
 # English ASR -- its OWN venv (mainline NeMo, cannot share an environment
 # with the AI4Bharat fork the main venv uses for bn/hi -- see
-# english_asr_server.py's module docstring). Not yet called by the
-# orchestrator (main.py/main_pcm.py still only ever route to Bengali --
-# that wiring, plus agent/lid.py and the two *_router.py modules, is the
-# next concrete step, not done as of docs/adr/0001). Started anyway so it
-# can be smoke-tested on its own.
+# english_asr_server.py's module docstring). Called over HTTP by the
+# orchestrator (agent/asr_router.py HTTPASREngine) whenever "en" is an
+# active language; see the case statement below for the Bengali-only build.
 cat > /workspace/bin/_run_english_asr.sh <<'EOF'
 #!/bin/bash
 source /workspace/kolkata-care-voice-agent/deploy/env.sh
@@ -107,7 +108,18 @@ if [ "${ONLY_PCM:-0}" != "1" ]; then
 start voice-agent 8100 /workspace/logs/main_app.log     /workspace/bin/_run_main.sh
 fi
 start voice-pcm   8101 /workspace/logs/pcm_app.log      /workspace/bin/_run_pcm.sh
-start english-asr 8003 /workspace/logs/english_asr.log  /workspace/bin/_run_english_asr.sh
+# The English ASR process exists only to serve the English language. In a Bengali-only build
+# (VOICE_AGENT_LANGUAGES=bn, the rollback lever -- deploy/env.sh) nothing calls it, so it is not started, and
+# a copy left over from the three-language build is stopped (by port, like everything here) to free its GPU memory.
+case ",${VOICE_AGENT_LANGUAGES}," in
+    *,en,*)
+        start english-asr 8003 /workspace/logs/english_asr.log  /workspace/bin/_run_english_asr.sh
+        ;;
+    *)
+        fuser -k 8003/tcp >/dev/null 2>&1
+        echo "  english-asr not started (VOICE_AGENT_LANGUAGES=${VOICE_AGENT_LANGUAGES})"
+        ;;
+esac
 
 echo
 echo "Models load for 1-3 minutes. Watch readiness with:"
