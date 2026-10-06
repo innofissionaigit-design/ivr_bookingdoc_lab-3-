@@ -20,6 +20,64 @@
 > None of this changes §1–§3 or §6's infrastructure traps — they're still
 > exactly as true as they were.
 
+> **Update, 2026-10-06 — merged feature set. Read this before trusting any
+> feature inventory below.**
+> This tree is the union of two branches that had diverged for three days and
+> shared no git ancestor: `ivr_dev_2@dev_sourav` ("the Sourav side") and
+> `multilingual_ivr@main` ("the multilingual side"). Both are present in full;
+> neither was dropped. Labels follow `CLAUDE.md` §2 and the peer-review doc's
+> §30 convention — **Current implementation**, **Known gap**, **Unmeasured**.
+>
+> **Current implementation — from the multilingual side**
+> - Per-utterance reply language (`docs/adr/0002`). `REPLY_LANGUAGE_MODE`
+>   defaults to `per_utterance`; `sticky` restores the pre-ADR-0002 behaviour.
+>   The call's language is no longer latched at the greeting.
+> - Early language ID on the first words of a turn (`agent/early_lid.py`),
+>   used when decisive so the whole utterance is not identified twice.
+> - Language-ambiguity backstop: after too many consecutive turns where LID is
+>   unsure *and* the recogniser is unconvincing, the call stops guessing and
+>   goes to a person (`agent/lang_select.outcome_is_ambiguous`, `settle()` in
+>   `_route_and_transcribe`).
+> - One rollback lever for languages, honoured by every process:
+>   `deploy/set_languages.sh bn` (persisted in `/workspace/.voice_agent_languages`,
+>   read by `main.py`, `tts_server.py`, `deploy/start_all.sh`, `deploy/status.sh`).
+> - Stories: *caller asks what they have booked* (behind the same security gate
+>   the history flow uses — a spoken phone number is a claim, not proof),
+>   *caller says tomorrow / day after / next Monday*, *patient name is misheard*,
+>   *caller asks for the earliest available appointment*, *requested slot is
+>   already taken* (now carries the other-day slot **with its own date**),
+>   *caller moves / cancels an appointment* (refund eligibility is stated, never
+>   inferred from the charge).
+>
+> **Current implementation — from the Sourav side**
+> - Home sample collection, end to end (KCD-387): eligibility, slots, quote,
+>   payment policy, hold → confirm → book, cancel. `agent/home_collection_flow.py`,
+>   `clinic-api/home_collection_service.py`. Before this, the eligibility endpoint
+>   existed in `clinic-api` and nothing in `agent/` ever called it.
+> - *Caller has reached the hospital by mistake* (`agent/unrelated_caller.py`):
+>   decided deterministically, vetoed by any hospital cue, skipped entirely while
+>   a task is in progress, filed under its own `unrelated_caller` outcome so it
+>   can never read as a successfully served call.
+> - *Caller has several tests with conflicting preparation* (KCD-382): the
+>   strictest-constraint merge happens in `clinic-api`, never in the agent, and a
+>   merge it cannot resolve safely hands off to a human rather than guessing.
+> - Registered/booked-patient preparation (KCD-382b): asked once per call, so a
+>   caller the database already knows is not made to repeat test names.
+>
+> **Known gap — the one that forces a deployment choice**
+> `PRONUNCIATION_ALLOW_DRAFT` ships **0** in `deploy/env.sh`: no unreviewed
+> spoken form of an English clinical term is synthesised. Nobody has done the
+> native-speaker review yet (`REVIEWED` in `agent/pronunciation.py` is empty), so
+> a reply naming an unapproved term is still blocked and the caller hears the
+> system-busy fallback — the live call of 2026-09-28. The way out is the review
+> (`agent/pronunciation.review_sheet()`), not the flag. Setting it to 1 is a
+> documented listening aid for a pod session and `main.py` logs a warning while
+> it is on; it is not a release setting.
+>
+> **Unmeasured** — every latency, concurrency, WER/CER and TTS-quality number
+> for this merged tree. Nothing here has run on a pod. `tests/test_smoke.py`
+> needs live services and fails off-pod by design; `gate.sh` skips it and says so.
+
 Read sections 1–4 before touching anything. They will save you a week.
 
 ---

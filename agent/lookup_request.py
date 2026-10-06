@@ -28,6 +28,9 @@ Deciding what the caller WANTS is allowed here; deciding what is TRUE is not (CL
 THE RULE. All three must hold:
 
   1. no want-verb anywhere      -- "চাই", "चाहिए", "I want" veto outright, checked FIRST
+  1b. no OTHER action asked of   -- "আমার বুক করা টেস্টটা বাড়ি থেকে নেওয়া যাবে?" names a booking the caller
+      that same booking            already has, but what it ASKS FOR is a home visit, not a read-back.
+                                   Same shape as rule 1: a different action vetoes.
   2. a booking noun            -- appointment / booking, in any of the four scripts
   3. an existing-booking marker -- a possessive ("আমার", "my"), an existence or past verb
                                   ("আছে", "ছিল", "है", "बुक है"), or a bare "when" ("কবে", "कब")
@@ -66,6 +69,28 @@ _WANT_LATIN = re.compile(
     r"chai|chaai|lagbe|dorkar|korte\s+chai|chahiye)\b",
     re.IGNORECASE,
 )
+
+# 1b. A DIFFERENT ACTION asked of a booking the caller already has. Rule 1 vetoes a request for a
+#     NEW booking; this vetoes a request to do something ELSE with an existing one, which is the
+#     same mistake arriving from the other side: "আমার বুক করা টেস্টটা বাড়ি থেকে নেওয়া যাবে?" satisfies
+#     rules 2 and 3 ("আমার", "বুক করা") and is nonetheless a home-collection request, not a
+#     read-back. Home collection is the one such action with its own whole conversation (the
+#     "home_collection" intent in agent/llm.py, agent/home_collection_flow.py), so a turn carrying
+#     its cues abstains here and the MODEL classifies it -- exactly what this module's docstring
+#     says a miss should cost: a classification, never a wrong answer.
+#     Cancel/reschedule are deliberately NOT vetoed: those flows start from a booking that was
+#     read back first, so reaching the lookup before them is the right order.
+_OTHER_ACTION_INDIC = (
+    # Bengali -- "from home", "at home", "home collection"
+    "বাড়ি থেকে", "বাড়িতে", "বাসা থেকে", "বাসায়", "হোম কালেকশন", "হোম কোলেকশন",
+    # Hindi
+    "घर से", "घर पर", "घर पे", "होम कलेक्शन",
+)
+_OTHER_ACTION_LATIN = re.compile(
+    r"\b(?:home\s*collection|home\s*visit|(?:from|at)\s+home|collect(?:ed|ion)?\s+(?:from|at)\s+home|bari\s*theke|barite|basa\s*theke|ghar\s*se|ghar\s*p[ae])\b",
+    re.IGNORECASE,
+)
+
 
 # 2. The thing being asked about.
 _NOUN_INDIC = (
@@ -108,6 +133,13 @@ def wants_new_booking(text: str) -> bool:
     return _indic_hit(_WANT_INDIC, t) or _WANT_LATIN.search(t) is not None
 
 
+def asks_about_another_action(text: str) -> bool:
+    """Does the turn ask for something to be DONE with the booking rather than read back? Rule 1b,
+    exposed alongside wants_new_booking() for the same reason: the tests and the eval need it."""
+    t = _nfc(text)
+    return _indic_hit(_OTHER_ACTION_INDIC, t) or _OTHER_ACTION_LATIN.search(t) is not None
+
+
 def asks_what_is_booked(text: str) -> bool:
     """Is the caller asking what they already have booked?
 
@@ -116,7 +148,7 @@ def asks_what_is_booked(text: str) -> bool:
     for that reason.
     """
     t = _nfc(text)
-    if wants_new_booking(t):
+    if wants_new_booking(t) or asks_about_another_action(t):
         return False
     if not (_indic_hit(_NOUN_INDIC, t) or _NOUN_LATIN.search(t)):
         return False

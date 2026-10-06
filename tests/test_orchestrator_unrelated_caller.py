@@ -239,8 +239,14 @@ async def test_a_hospital_sentence_is_never_closed_as_unrelated_even_if_the_mode
     s = e.session
     said = await _say(e, text, "en", "unrelated_caller")
     # either the model's proposal was vetoed (a plain re-ask) or an existing deterministic hospital handler (e.g. the history
-    # flow for "my appointment details") answered first -- in no case is it treated as an unrelated caller
-    assert said == [phrase("unclear", "en")] or "phone number" in text_of(said)
+    # flow for "my appointment details") answered first -- in no case is it treated as an unrelated caller.
+    # Two handlers can answer first, and both ask the caller to identify a booking, in their own words:
+    # the history flow ("phone number") and -- since the multilingual merge -- agent/lookup_request.py's
+    # deterministic lookup_booking net ("the number you booked from"), which reaches "mera appointment check
+    # karna tha" before the model is asked at all. Both are hospital answers; this accepts either wording.
+    # The assertions BELOW are the actual safety guarantee and are unchanged.
+    answered_as_hospital = "phone number" in text_of(said) or "number you booked from" in text_of(said)
+    assert said == [phrase("unclear", "en")] or answered_as_hospital
     assert FIRST["en"] not in text_of(said) and FINAL["en"] not in text_of(said)
     assert (
         s.unrelated_count == 0 and not s.ws.closed and s.outcome == "completed" and s.signals.unrelated_caller is False
