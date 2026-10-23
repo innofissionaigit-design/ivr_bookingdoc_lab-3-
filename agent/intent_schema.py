@@ -71,6 +71,11 @@ FAQ_TOPICS: tuple[str, ...] = (
 SLOT_KEYS: tuple[str, ...] = (
     "test_name",
     "test_names",
+    # HOW MANY tests the caller said, which is a different fact from WHICH tests they said. Kept apart on
+    # purpose: a caller who says "দুটো টেস্ট" has told us the count and nothing else, and the model filling
+    # two plausible NAMES to match the count is exactly what quoted a caller 1100 rupees for tests they never
+    # asked for (live 2026-10-08, agent/entity_grounding.py). A count never produces a name.
+    "test_count",
     "doctor_name",
     "date",
     "time_slot",
@@ -98,7 +103,7 @@ SLOT_KEYS: tuple[str, ...] = (
 _TEXT_SLOTS = tuple(
     k
     for k in SLOT_KEYS
-    if k not in ("test_names", "patient_age", "spelled_letters", "faq_topic", "postal_code")
+    if k not in ("test_names", "test_count", "patient_age", "spelled_letters", "faq_topic", "postal_code")
 )
 _MAX_AGE = 130
 # ADDED BY SOURAV: a postal code is exactly 6 digits (Indian PIN) -- anything else is not a
@@ -140,6 +145,7 @@ class Slots(BaseModel):
     confirmation_id: str | None = None
     patient_name: str | None = None
     patient_age: int | None = None
+    test_count: int | None = None
     phone: str | None = None
     contact_phone: str | None = None
     relationship: str | None = None
@@ -183,6 +189,16 @@ class Slots(BaseModel):
     @classmethod
     def _age(cls, v: Any) -> int | None:
         return normalize_age(v)
+
+    @field_validator("test_count", mode="before")
+    @classmethod
+    def _test_count(cls, v: Any) -> int | None:
+        """1-5 only. Anything else is a misheard number, not a caller naming six tests in one breath."""
+        try:
+            n = int(str(v).strip())
+        except (TypeError, ValueError):
+            return None
+        return n if 1 <= n <= 5 else None
 
     @field_validator("faq_topic", mode="before")
     @classmethod

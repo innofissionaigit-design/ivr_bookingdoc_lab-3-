@@ -435,6 +435,68 @@ def test_an_unknown_doctor_is_not_found_and_reads_no_schedule(clinic):
     assert body["found"] is False and "schedule" not in body and "doctor_name" not in body
 
 
+# The three below are the same "Doctor Nobody" failure arriving by routes the original guard did not
+# cover, each measured on this tree on 2026-10-06/07. Marked `hallucination` so the gate's marker suite
+# (scripts/gate.sh, `pytest -m hallucination`) runs them with tests/test_smoke.py's two -- that file is
+# pod-only (it talks to live services), so a guard added there would never run off-pod.
+
+
+@pytest.mark.hallucination
+@pytest.mark.parametrize("spoken", ["a doctor", "any doctor", "Dr. A."])
+def test_a_request_for_any_doctor_resolves_to_no_doctor(clinic, spoken):
+    """Never a doctor, never a schedule. (The phonetic suggester may still offer a sound-alike for
+    "any" -> "Ray"; a suggestion needs the caller's yes, and the agent never sends these phrases to
+    the clinic in the first place -- agent/doctor_request.names_a_doctor stops them.)"""
+    body = _availability(clinic, spoken)
+    assert body["found"] is False and "doctor_name" not in body and "schedule" not in body
+
+
+@pytest.mark.hallucination
+@pytest.mark.parametrize("spoken", ["a doctor", "Dr. A."])
+def test_a_bare_initial_offers_no_doctors_at_all(clinic, spoken):
+    """ "a doctor" once offered Arindam Sen, Aparna Basu, Amit Kar and Ashok Dey: with the title word
+    dropped, the token "a" matched every "Dr. A." initial. A bare initial identifies nobody."""
+    assert not _availability(clinic, spoken).get("did_you_mean")
+
+
+@pytest.mark.hallucination
+def test_a_different_surname_containing_a_real_one_is_suggested_never_resolved(clinic):
+    """ "পালিত" (Palit -- nobody here) contains "পাল" (Pal). The alias step was a substring test, so the
+    caller was confidently read Dr. Pal's real schedule. Now it is only ever suggested, for a yes."""
+    body = _availability(clinic, "পালিত")
+    assert body["found"] is False and "doctor_name" not in body and "schedule" not in body
+    assert body["did_you_mean"] == ["Dr. R. Pal"]
+
+
+@pytest.mark.hallucination
+def test_a_surname_does_not_match_inside_a_longer_surname(clinic):
+    """ "সেন" is Sen's surname, not a fragment of Sengupta's: it resolves to Dr. Sen alone, instead of
+    asking "Sen or Sengupta?" -- the question a caller answering "সেন" was asked over and over."""
+    assert _availability(clinic, "সেন")["doctor_name"] == "Dr. A. Sen"
+    assert _availability(clinic, "সেনগুপ্ত")["doctor_name"] == "Dr. P. Sengupta"
+
+
+@pytest.mark.parametrize(
+    "spoken,doctor",
+    [
+        ("পালের", "Dr. R. Pal"),  # a Bengali case ending is the same name
+        ("সেনের", "Dr. A. Sen"),
+        ("दत्त", "Dr. M. Dutta"),  # the Hindi alias is spelled दत्ता; the long-a is a spelling variant
+        ("सेन", "Dr. A. Sen"),
+    ],
+)
+def test_a_case_ending_or_spelling_variant_still_resolves(clinic, spoken, doctor):
+    assert _availability(clinic, spoken)["doctor_name"] == doctor
+
+
+@pytest.mark.parametrize("spoken", ["হার্টের ডাক্তার", "কার্ডিওলজি", "दिल का डॉक्टर", "heart doctor"])
+def test_a_department_named_in_any_language_lists_its_doctors_with_a_spoken_name(clinic, spoken):
+    body = clinic.get("/api/v1/doctors/by-department", params={"department": spoken}).json()
+    assert body["found"] is True and body["department"] == "Cardiology"
+    assert body["department_bn"] == "কার্ডিওলজি" and body["department_hi"] == "कार्डियोलॉजी"
+    assert body["count"] >= 1
+
+
 def test_a_sound_alike_test_is_suggested_never_priced(clinic):
     body = clinic.get("/api/v1/tests/search", params={"name": "sibisi"}).json()
     assert body["found"] is False and "Complete Blood Count (CBC)" in body["did_you_mean"]

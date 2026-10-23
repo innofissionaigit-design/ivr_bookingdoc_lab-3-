@@ -22,8 +22,15 @@ import unicodedata
 
 import agent_messages as am
 import booking_service as bs
+from department_match import DepartmentKeys
+from department_match import match as match_departments
+from department_match import strip_filler as strip_department_filler
+from department_match import suggest as suggest_departments
+from department_match import word_match
+import doctor_mention as dm
 import enquiry_service as eq
 import gazetteer as gz
+from i18n_content import DEPARTMENT_ALIASES
 # ADDED BY SOURAV: the full home-collection visit flow (slots/hold/confirm/booking/assignment) --
 # see home_collection_service.py's own module docstring for why this is a separate service module
 # from booking_service.py/enquiry_service.py rather than folded into either.
@@ -256,7 +263,7 @@ def catalogue(db: Session = Depends(get_db)):
 # Words that carry no test identity when a caller wraps a test name in a
 # sentence: "lipid profile TEST" must match "Lipid Profile". Bengali/Hindi
 # spellings of "test" included.
-_GENERIC_WORDS = {"test", "tests", "the", "a", "of", "for", "price", "rate", "টেস্ট", "টেস্টের", "टेस्ट", "जांच"}
+_GENERIC_WORDS = {"test", "tests", "the", "a", "of", "for", "price", "rate", "টেস্ট", "টেস্টের", "टेस्ट", "जांच", "পরীক্ষা", "পরীক্ষার", "পরীক্ষাটা", "পরীক্ষাটি", "परीक्षण", "परीक्षा"}
 
 
 def _norm_name(s: str) -> str:
@@ -390,6 +397,16 @@ def _find_test_candidates(db: Session, name: str) -> list[LabTest]:
     when tiers 1-3 find nothing here."""
     all_tests = db.query(LabTest).all()
 
+    # A name said EXACTLY -- the catalogue name, its bracketed code ("CBC") or an alias, compared without
+    # generic words like "test" -- is that test, even when it is also a part of another test's name: "TSH"
+    # is the TSH test, not "TSH or Thyroid Profile (T3 T4 TSH)?". Two tests sharing the exact form stay
+    # ambiguous; a name that is only PART of names ("sugar") falls through to the tiers below unchanged.
+    q_exact = _norm_name(name)
+    if q_exact:
+        named = [t for t in all_tests if any(_norm_name(f) == q_exact for f in _test_forms(t))]
+        if named:
+            return named
+
     exact = [t for t in all_tests if name.lower() in t.name.lower()]
     if exact:
         return exact
@@ -437,6 +454,28 @@ def _scripted(db: Session, body: dict, model) -> dict:
 
 def _test_suggestions(db: Session, name: str) -> list[str]:
     return [sg.canonical for sg in _gazetteer(db, "test").suggest(name, limit=3)]
+
+
+@app.get("/api/v1/tests")
+def list_tests(db: Session = Depends(get_db)):
+    """Every lab test with its rate, in catalogue order -- for "which tests do you do?", read out a few at a time
+    by the agent. The rates are the database's, exactly as /tests/search gives them one by one: the list is the
+    same truth, never a figure for the model to restate."""
+    tests = db.query(LabTest).order_by(LabTest.id).all()
+    return {
+        "count": len(tests),
+        "tests": [
+            {
+                "found": True,
+                "test_name": t.name,
+                "test_name_bn": _first_alias_bn(t.aliases_bn),
+                "test_name_hi": _first_alias_bn(t.aliases_hi),
+                "rate_inr": t.rate_inr,
+                "sample_type": t.sample_type,
+            }
+            for t in tests
+        ],
+    }
 
 
 @app.get("/api/v1/tests/search")
@@ -563,6 +602,14 @@ def _doctor_exact_matches(db: Session, name: str) -> list[Doctor]:
     needle = " ".join(needle_tokens)
     if not needle:
         return []
+    # Bare initials name nobody. "a doctor" left the single token "a" once the title
+    # word was dropped, and "a" is a whole-name token of every "Dr. A. <surname>" --
+    # so the caller who asked for ANY doctor was offered four specific ones by the
+    # accident of their first initial (measured 2026-10-06: Arindam Sen, Aparna
+    # Basu, Amit Kar, Ashok Dey). An initial is only meaningful beside a surname
+    # ("A. Sen"), which still resolves because "sen" is a real token.
+    if all(len(w) <= 1 for w in needle_tokens):
+        return []
     doctors = db.query(Doctor).all()
 
     def tokens(d):
@@ -589,8 +636,12 @@ def _doctor_exact_matches(db: Session, name: str) -> list[Doctor]:
             if a
         ]
         # a one- or two-letter fragment ("ry") sits inside far too many names to identify any of them
+        # Aliases are matched as WORDS, in both directions (the caller said the alias, or said one word of
+        # a longer alias such as a whole Bengali name). A plain substring test resolved "পালিত" (Palit,
+        # nobody here) to Dr. Pal because "পাল" is inside it -- department_match.word_match()'s docstring.
+        said = name.lower()
         if (len(needle) >= MIN_SUBSTRING_CHARS and needle in d.name.lower()) or any(
-            name in a or a in name for a in aliases
+            word_match(a.lower(), said) or word_match(said, a.lower()) for a in aliases
         ):
             out.append(d)
     return out
@@ -692,12 +743,37 @@ def _schedule_for_weekday(db: Session, doctor_id: int, weekday: int) -> DoctorSc
     return db.query(DoctorSchedule).filter_by(doctor_id=doctor_id, weekday=weekday).first()
 
 
+def _sitting_over(sched: DoctorSchedule, day: datetime.date) -> bool:
+    """Today's chamber with no bookable start left. Offered as the doctor's "next sitting" at 16:41 for a
+    10:00-12:00 chamber, it sent the caller round a loop: every time they gave was refused as invalid.
+    Any other day is never over -- this only ever looks at today."""
+    now = datetime.datetime.now()
+    if day != now.date():
+        return False
+    now_hm = now.strftime("%H:%M")
+    return not any(start > now_hm for start in _generate_slots(sched.start_time, sched.end_time))
+
+
 def _next_available_date(db: Session, doctor_id: int, from_date: datetime.date, horizon_days: int = 14) -> str | None:
     for offset in range(horizon_days):
         d = from_date + datetime.timedelta(days=offset)
-        if _schedule_for_weekday(db, doctor_id, d.weekday()):
+        sched = _schedule_for_weekday(db, doctor_id, d.weekday())
+        if sched and not _sitting_over(sched, d):
             return d.isoformat()
     return None
+
+
+def _chamber_days(db: Session, doctor_id: int) -> list[int]:
+    """The weekdays the doctor sits, Monday = 0 (datetime.date.weekday()), so "when does Dr Sen sit?" is
+    answered with the days themselves and not only the next date (story: "Caller asks when a doctor sits")."""
+    return sorted({s.weekday for s in db.query(DoctorSchedule).filter_by(doctor_id=doctor_id).all()})
+
+
+def _regular_hours(db: Session, doctor_id: int) -> str | None:
+    """The chamber hours when every sitting has the same ones, else None -- so "sits Monday and Friday,
+    10:00-12:00" is only ever said when it is true of both days."""
+    hours = {f"{s.start_time}-{s.end_time}" for s in db.query(DoctorSchedule).filter_by(doctor_id=doctor_id).all()}
+    return hours.pop() if len(hours) == 1 else None
 
 
 @app.get("/api/v1/doctors/availability")
@@ -729,7 +805,7 @@ def doctor_availability(name: str = Query(...), date: str | None = Query(None), 
         except ValueError:
             return {"found": False, "query": name}
         sched = _schedule_for_weekday(db, doctor.id, target.weekday())
-        if sched:
+        if sched and not _sitting_over(sched, target):
             return {
                 "found": True,
                 "doctor_name": _doctor_ref(db, doctor),
@@ -739,8 +815,11 @@ def doctor_availability(name: str = Query(...), date: str | None = Query(None), 
                 "available": True,
                 "chamber_hours": f"{sched.start_time}-{sched.end_time}",
                 "next_available_date": None,
+                "chamber_days": _chamber_days(db, doctor.id),
+                "regular_chamber_hours": _regular_hours(db, doctor.id),
             }
         next_date = _next_available_date(db, doctor.id, target + datetime.timedelta(days=1))
+        next_sched = _schedule_for_weekday(db, doctor.id, datetime.date.fromisoformat(next_date).weekday()) if next_date else None
         return {
             "found": True,
             "doctor_name": _doctor_ref(db, doctor),
@@ -750,6 +829,9 @@ def doctor_availability(name: str = Query(...), date: str | None = Query(None), 
             "available": False,
             "chamber_hours": None,
             "next_available_date": next_date,
+            "next_chamber_hours": f"{next_sched.start_time}-{next_sched.end_time}" if next_sched else None,
+            "chamber_days": _chamber_days(db, doctor.id),
+            "regular_chamber_hours": _regular_hours(db, doctor.id),
         }
 
     # No date given -> "when is this doctor next available"
@@ -775,6 +857,8 @@ def doctor_availability(name: str = Query(...), date: str | None = Query(None), 
         "available": True,
         "chamber_hours": f"{sched.start_time}-{sched.end_time}",
         "next_available_date": None,
+        "chamber_days": _chamber_days(db, doctor.id),
+        "regular_chamber_hours": _regular_hours(db, doctor.id),
     }
 
 
@@ -956,6 +1040,11 @@ def _validate_doctor_slot(db: Session, doctor: Doctor, date_str: str, time_slot:
     sched = _schedule_for_weekday(db, doctor.id, target.weekday())
     if not sched:
         return {"success": False, "reason": "doctor_not_available_that_day"}
+    if _sitting_over(sched, target):
+        # Today's chamber has no start left. Reported as invalid_slot (with an empty list) it sent the
+        # caller round a loop -- "Wednesday" said on Wednesday evening, every time refused as "not within
+        # the chamber hours" (live 2026-10-07). Its own reason lets the agent offer the next sitting.
+        return {"success": False, "reason": "sitting_over"}
     valid_slots = _generate_slots(sched.start_time, sched.end_time)
     if time_slot not in valid_slots:
         return {"success": False, "reason": "invalid_slot", "valid_slots": valid_slots}
@@ -972,9 +1061,10 @@ def _validate_doctor_slot(db: Session, doctor: Doctor, date_str: str, time_slot:
         except ValueError:
             return {"success": False, "reason": "invalid_slot", "valid_slots": valid_slots}
         if slot_h * 60 + slot_m <= now.hour * 60 + now.minute:
+            # A real chamber time, already gone today: not "invalid", and the caller is told which are left.
             return {
                 "success": False,
-                "reason": "invalid_slot",
+                "reason": "slot_passed",
                 "valid_slots": [
                     s
                     for s in valid_slots
@@ -1582,6 +1672,13 @@ def _doctor_listing(d) -> dict:
         "alias_hi": _first_alias(d.aliases_hi),
         "qualifications": d.qualifications,
         "department": d.department.name if d.department else None,
+        # The spoken forms, for the same reason full_name_bn exists above: a
+        # Latin department name is dropped by the Bengali/Hindi tokenizer, so a
+        # reply naming it is blocked outright (agent/tts.py). These endpoints
+        # take no `lang`, so both are sent and the reply template picks -- the
+        # established "<key>_<lang>" shape of alias_bn / did_you_mean_bn.
+        "department_bn": d.department.name_bn if d.department else None,
+        "department_hi": d.department.name_hi if d.department else None,
     }
 
 
@@ -1596,8 +1693,64 @@ def list_departments_endpoint(db: Session = Depends(get_db)):
     rows = db.query(Department).order_by(Department.name).all()
     return {
         "found": bool(rows),
-        "departments": [{"name": r.name, "doctor_count": len(r.doctors)} for r in rows],
+        "departments": [
+            {
+                "name": r.name,
+                "name_bn": r.name_bn,
+                "name_hi": r.name_hi,
+                "doctor_count": len(r.doctors),
+            }
+            for r in rows
+        ],
     }
+
+
+def _mention_forms(d: Doctor) -> dm.DoctorForms:
+    """Every way a caller may call this doctor, from the doctor's own row: first names and surnames in each script."""
+    full_names = [n for n in (_strip_title(d.full_name), d.full_name_bn, d.full_name_hi) if n and n.split()]
+    firsts = tuple(dict.fromkeys(n.split()[0] for n in full_names if len(n.split()) > 1))
+    surnames = [d.name.split()[-1]] + [n.split()[-1] for n in full_names]
+    surnames += [a for a in (d.aliases_bn + "|" + (d.aliases_hi or "")).split("|") if a.strip()]
+    return dm.DoctorForms(key=d.name, first_names=firsts, surnames=tuple(dict.fromkeys(surnames)))
+
+
+@app.get("/api/v1/doctors/mentioned")
+def doctors_mentioned_endpoint(text: str = Query(...), db: Session = Depends(get_db)):
+    """Which doctors does this whole SENTENCE mention? (clinic-api/doctor_mention.py has the rules and the why.)
+
+    The availability lookup above answers "who is this name?"; this answers "is there a name in here at all, and whose?"
+    -- read against the doctor table, so a word that is not one of this clinic's doctors is never sent on as a name.
+
+      count 0              nobody is mentioned; the agent falls back to what the intent model extracted
+      count 1, exact       `found` with that doctor's canonical `doctor_name`
+      count 1, not exact   not found; `did_you_mean` offers the one doctor, `needs_confirmation` -- ask, never act
+      count 2+             `ambiguous` with every one offered ("ghosh na ki jeno guha") -- the caller chooses
+    """
+    rows = db.query(Doctor).order_by(Doctor.id).all()
+    by_key = {d.name: d for d in rows}
+    found = dm.mentioned(text or "", [_mention_forms(d) for d in rows])
+    doctors = [by_key[m.key] for m in found]
+    body = {
+        "found": len(found) == 1 and found[0].exact,
+        "count": len(found),
+        "query": text,
+        "doctors": [{**_doctor_listing(by_key[m.key]), "exact": m.exact, "strength": m.strength} for m in found],
+    }
+    if body["found"]:
+        d = doctors[0]
+        body.update(
+            doctor_name=_doctor_ref(db, d),
+            doctor_name_bn=_first_alias_bn(d.aliases_bn),
+            doctor_name_hi=_first_alias_bn(d.aliases_hi),
+        )
+    elif doctors:
+        # The same "which one?" body the availability lookup gives, so the agent asks with the template it already has.
+        choices = _doctor_choices(db, text, doctors, near=not all(m.exact for m in found))
+        if len(doctors) == 1:
+            choices.pop("ambiguous", None)
+        body.update(choices)
+        body["found"] = False
+    return body
 
 
 @app.get("/api/v1/doctors")
@@ -1629,32 +1782,60 @@ def doctors_by_department_endpoint(department: str = Query(...), db: Session = D
         return {"found": False, "query": department}
 
     rows = db.query(Department).order_by(Department.name).all()
-    low = query.lower()
-    exact = [r for r in rows if r.name.lower() == low]
-    # Matched in BOTH directions on purpose, so the agent never has to carve a
-    # department name out of a sentence before asking. "which doctors are in
-    # cardiology" contains "Cardiology", and "cardio" is contained BY it; both
-    # resolve here, against the real department table, instead of being guessed
-    # at by a text extractor in agent/ that has no list to check itself against.
-    # The no-guessing discipline is unchanged: several matches are still
-    # `ambiguous` rather than silently resolving to the first row.
-    matches = exact or [r for r in rows if low in r.name.lower() or r.name.lower() in low]
+    # Matched against EVERY written form of each department -- the catalogue
+    # name, the Bengali and Hindi spoken names, and how callers actually say it
+    # ("হার্টের ডাক্তার", "दिल का डॉक्टर", "heart doctor") -- by
+    # department_match.match(). The Latin-name-only substring test this
+    # replaces found none of those, so a caller who named a department in
+    # Bengali or Hindi was told it did not exist. The no-guessing discipline is
+    # unchanged: several matches are still `ambiguous`, never the first row.
+    keyed = [
+        DepartmentKeys(r.name, [r.name_bn, r.name_hi, *DEPARTMENT_ALIASES.get(r.name, [])])
+        for r in rows
+    ]
+    by_name = {r.name: r for r in rows}
+    matches = [by_name[n] for n in match_departments(query, keyed)]
 
     if not matches:
-        near = [r.name for r in rows if r.name.lower()[:3] == query.lower()[:3]][:3]
+        stripped = strip_department_filler(query)
+        near = (
+            [r.name for r in rows if stripped and r.name.lower()[:3] == stripped[:3]][:3]
+            if len(stripped) >= 3
+            else []
+        )
         body = {"found": False, "query": query}
         if near:
             body["did_you_mean"] = near
             body["needs_confirmation"] = len(near) == 1
+        else:
+            # A department said in a spelling the rules cannot read ("কার্ডিয়োলজি"): offered as a question in the
+            # caller's language, never opened -- department_match.suggest(). The Latin catalogue name cannot be
+            # voiced by the Bengali or Hindi TTS, so the spoken names go with it, as for an ambiguous answer.
+            close = [by_name[n] for n in suggest_departments(query, keyed) if n in by_name]
+            if close:
+                body["did_you_mean"] = [r.name for r in close]
+                body["did_you_mean_bn"] = [r.spoken_name("bn") for r in close]
+                body["did_you_mean_hi"] = [r.spoken_name("hi") for r in close]
+                body["needs_confirmation"] = len(close) == 1
         return body
     if len(matches) > 1:
-        return {"found": False, "query": query, "ambiguous": True, "did_you_mean": [r.name for r in matches[:3]]}
+        return {
+            "found": False,
+            "query": query,
+            "ambiguous": True,
+            "did_you_mean": [r.name for r in matches[:3]],
+            # Offering the choice in Latin would block the question itself.
+            "did_you_mean_bn": [r.spoken_name("bn") for r in matches[:3]],
+            "did_you_mean_hi": [r.spoken_name("hi") for r in matches[:3]],
+        }
 
     dept = matches[0]
     doctors = db.query(Doctor).filter_by(department_id=dept.id).order_by(Doctor.name).all()
     return {
         "found": True,
         "department": dept.name,
+        "department_bn": dept.name_bn,
+        "department_hi": dept.name_hi,
         "count": len(doctors),
         "doctors": [_doctor_listing(d) for d in doctors],
     }

@@ -73,6 +73,15 @@ def test_old_database_gains_columns_and_translations_without_losing_rows(old_db)
 
     added = seed.add_i18n_columns()
     assert set(added) == {
+        # DELIBERATE SPEC CHANGE: the Bengali and Hindi spoken forms of each
+        # department name. A Latin department name is DROPPED by the Bengali and
+        # Hindi tokenizers, so agent/tts.py blocked every reply that named one
+        # (UnspeakableTextError) and the caller heard the system-busy fallback
+        # instead of an answer -- measured as four of the eight seeded
+        # departments. An old database must gain these two columns or those
+        # replies stay blocked after an upgrade; nothing else changed.
+        "departments.name_bn",
+        "departments.name_hi",
         "doctors.aliases_hi",
         "lab_tests.aliases_hi",
         "lab_tests.prep_instructions_hi",

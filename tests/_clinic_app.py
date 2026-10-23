@@ -23,6 +23,8 @@ _CLINIC_MODULES = (
     "enquiry_service",
     "enquiry_migrate",
     "i18n_content",
+    "department_match",
+    "doctor_mention",
     "phonetic_match",
     "patient_context",
     "disclosure",

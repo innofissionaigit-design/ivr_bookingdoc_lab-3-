@@ -21,6 +21,7 @@ import httpx
 from pydantic import BaseModel
 
 from agent.api_models import (
+    TestListAnswer,
     ConflictAnswer,
     DoctorAnswer,
     FaqAnswer,
@@ -32,6 +33,7 @@ from agent.api_models import (
     HomeCollectionSlotsAnswer,
     IdentifyAnswer,
     LookupAnswer,
+    MentionAnswer,
     PrepAnswer,
     PrepMergeAnswer,
     RouteAnswer,
@@ -65,6 +67,15 @@ class ClinicToolsClient:
     #   found=true:  {"found": true, "test_name": "...", "rate_inr": 650,
     #                 "sample_type": "Blood", "report_time_hours": 24}
     #   found=false: {"found": false, "query": "...", "did_you_mean": ["..."]}
+    async def list_tests(self) -> dict:
+        """Every lab test with its rate (GET /api/v1/tests), for "which tests do you do?"."""
+        try:
+            r = await self._client.get("/api/v1/tests")
+            r.raise_for_status()
+            return validated(TestListAnswer, r.json(), "list_tests")
+        except (httpx.HTTPError, ValueError) as e:
+            raise ToolCallError(f"list_tests(): {e}") from e
+
     async def get_test_rate(self, test_name: str) -> dict:
         try:
             r = await self._client.get("/api/v1/tests/search", params={"name": test_name})
@@ -399,6 +410,20 @@ class ClinicToolsClient:
             return validated(FoundAnswer, r.json(), "doctors_by_department")
         except (httpx.HTTPError, ValueError) as e:  # ValueError: not JSON, or not the expected shape
             raise ToolCallError(f"doctors_by_department({department!r}): {e}") from e
+
+    async def doctors_mentioned(self, text: str) -> dict:
+        """Every doctor the caller's whole sentence names, read against the clinic's own doctor table
+        (clinic-api/doctor_mention.py). The answer to "is there a doctor's name in what they said, and whose?" --
+        which the intent model's copied slot cannot be trusted with ("বসেন" -- "sits" -- was sent as a name).
+
+        count 0 = nobody named; 1 and `found` = that doctor; otherwise `did_you_mean` lists who to ask about.
+        """
+        try:
+            r = await self._client.get("/api/v1/doctors/mentioned", params={"text": text})
+            r.raise_for_status()
+            return validated(MentionAnswer, r.json(), "doctors_mentioned")
+        except (httpx.HTTPError, ValueError) as e:  # ValueError: not JSON, or not the expected shape
+            raise ToolCallError(f"doctors_mentioned(): {e}") from e
 
     async def submit_complaint(
         self, call_id: str, text: str, detected_by: str = "", lang: str = "", phone: str | None = None

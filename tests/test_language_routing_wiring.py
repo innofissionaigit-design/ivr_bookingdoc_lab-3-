@@ -273,11 +273,13 @@ REPLY = {
 }
 
 
-def test_per_utterance_is_the_default(m):
-    assert m.REPLY_LANGUAGE_MODE == "per_utterance"
+def test_the_first_sentence_fixes_the_call_language_by_default(m):
+    # docs/adr/0003 reversed ADR-0002's default; per_utterance is still a supported setting (tests below pin it).
+    assert m.REPLY_LANGUAGE_MODE == "sticky"
 
 
-def test_the_reply_language_follows_each_utterance(m):
+def test_the_reply_language_follows_each_utterance(m, monkeypatch):
+    monkeypatch.setattr(m, "REPLY_LANGUAGE_MODE", "per_utterance")
     s = m.CallSession(FakeWS())
     try:
         assert [m._resolve_reply_language(s, x) for x in ("bn", "en", "hi", "bn", "bn", "en")] == [
@@ -289,7 +291,8 @@ def test_the_reply_language_follows_each_utterance(m):
         s.cleanup()
 
 
-def test_an_explicit_request_holds_for_its_turn_and_seeds_the_next_prior_then_the_caller_decides(m):
+def test_an_explicit_request_holds_for_its_turn_and_seeds_the_next_prior_then_the_caller_decides(m, monkeypatch):
+    monkeypatch.setattr(m, "REPLY_LANGUAGE_MODE", "per_utterance")
     s = m.CallSession(FakeWS())
     try:
         m._resolve_reply_language(s, "bn")
@@ -368,7 +371,8 @@ def call(m, monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_a_caller_who_changes_language_is_answered_in_it_with_that_languages_template_set(m, call):
+async def test_a_caller_who_changes_language_is_answered_in_it_with_that_languages_template_set(m, call, monkeypatch):
+    monkeypatch.setattr(m, "REPLY_LANGUAGE_MODE", "per_utterance")
     for lang in ("bn", "hi", "en", "bn"):
         await call.say(lang)
     assert call.state["asked_in"] == ["bn", "hi", "en", "bn"]
@@ -381,3 +385,67 @@ async def test_sticky_mode_still_answers_in_the_first_language(m, call, monkeypa
     for lang in ("bn", "hi", "en"):
         await call.say(lang)
     assert call.state["asked_in"] == ["bn", "bn", "bn"]
+
+
+# ============================================ a decisive language ID is still checked against English (live 2026-10-09)
+
+
+class PerLanguageASR:
+    """What each recogniser writes for the same audio: {lang: (text, decoder agreement)}."""
+
+    def __init__(self, heard):
+        self.heard = heard
+
+    async def transcribe(self, lang, path):
+        text, agreement = self.heard[lang]
+        return Rec(text, agreement)
+
+
+def _decisive_bengali():
+    return early_lid.EarlyLID(key=0.0, task=_done(LIDResult(**SURE)))
+
+
+@pytest.mark.asyncio
+async def test_english_speech_called_bengali_by_a_decisive_language_id_is_still_answered_in_english(m, routing):
+    # Live: early LID bn 0.97; the Bengali recogniser transliterated the English; the English one heard it correctly.
+    routing.use(
+        FakeLID(**SURE),
+        PerLanguageASR(
+            {
+                "bn": ("উইচ টেস্ট আর অ্যাভেলেবল লেয়ার", 0.95),
+                "hi": ("विच टेस्ट आर अवेलेबल", 0.30),
+                "en": ("which tests are available there", 0.92),
+            }
+        ),
+    )
+    lang, result = await routing.turn(early=_decisive_bengali())
+    assert lang == "en" and result.text == "which tests are available there"
+
+
+@pytest.mark.asyncio
+async def test_a_real_bengali_turn_stays_bengali_whatever_the_english_recogniser_writes(m, routing):
+    routing.use(
+        FakeLID(**SURE),
+        PerLanguageASR(
+            {
+                "bn": ("আপনাদের ওখানে কোন কোন টেস্ট হয়", 0.95),
+                "hi": ("आपके यहां", 0.20),
+                "en": ("apna der okhane kon kon test hoy", 0.35),  # Latin text, but the decoders disagree
+            }
+        ),
+    )
+    lang, _ = await routing.turn(early=_decisive_bengali())
+    assert lang == "bn"
+    # ... and not even when the English decoders agree: the words must be English words too
+    routing.use(
+        FakeLID(**SURE),
+        PerLanguageASR(
+            {
+                "bn": ("আপনাদের ওখানে কোন কোন টেস্ট হয়", 0.95),
+                "hi": ("आपके यहां", 0.20),
+                "en": ("apna der okhane kon kon test hoy", 0.90),
+            }
+        ),
+    )
+    lang, _ = await routing.turn(early=_decisive_bengali())
+    assert lang == "bn"

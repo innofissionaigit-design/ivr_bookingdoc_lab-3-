@@ -49,6 +49,27 @@ class TestAnswer(FoundAnswer):
     needs_confirmation: StrictBool | None = None
 
 
+class TestListAnswer(_Answer):
+    """GET /api/v1/tests: every lab test with its rate. Each row is a TestAnswer's shape, and every rate must be a
+    real number -- it is read to the caller as a price."""
+
+    __test__ = False
+    count: StrictInt
+    tests: list[TestAnswer]
+
+
+class MentionAnswer(FoundAnswer):
+    """GET /api/v1/doctors/mentioned: which doctors a whole sentence names. `count` drives the agent's branch (none /
+    one / which-one?), so it must be a real integer, and `doctors` a real list."""
+
+    count: StrictInt
+    doctors: list[dict[str, Any]]
+    doctor_name: str | None = None
+    did_you_mean: list[str] | None = None
+    ambiguous: StrictBool | None = None
+    needs_confirmation: StrictBool | None = None
+
+
 class DoctorAnswer(FoundAnswer):
     doctor_name: str | None = None
     date: str | None = None

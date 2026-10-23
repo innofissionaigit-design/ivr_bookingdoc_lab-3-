@@ -48,6 +48,11 @@ class _AvailabilityMixin:
                 "doctor_name_hi": doctor, "date": "2026-10-01", "time_slot": "10:00",
                 "alternatives": []}
 
+    async def doctors_mentioned(self, text):
+        # The booking flow asks the clinic which doctors a sentence names before a doctor is chosen
+        # (clinic-api/doctor_mention.py). These sentences are scripted: nobody, so the model's slot decides.
+        return {"found": False, "count": 0, "doctors": []}
+
 
 class FakeTools(_AvailabilityMixin):
     """The clinic API surface the new flows use. Records what it was asked."""
@@ -197,10 +202,12 @@ async def test_a_head_lay_term_never_invents_a_test_the_catalogue_does_not_have(
 
 @pytest.mark.parametrize("text", ["rokto porikkha korte hobe", "peter chhobi korate chai", "mathar chhobi korate chai"])
 @pytest.mark.asyncio
-async def test_every_lay_term_reply_tells_the_caller_to_send_the_prescription_over_whatsapp(m, env, text):
+async def test_no_lay_term_reply_asks_the_caller_to_send_a_prescription_over_whatsapp(m, env, text):
+    # the sentence was removed on 2026-10-13 at the product owner's request
     said = await env.say(text)
     out = text_of(said)
-    assert "9635588306" in out or "9 6 3 5 5 8 8 3 0 6" in out
+    assert "9635588306" not in out and "9 6 3 5 5 8 8 3 0 6" not in out
+    assert "whatsapp" not in out.lower()
 
 
 @pytest.mark.asyncio

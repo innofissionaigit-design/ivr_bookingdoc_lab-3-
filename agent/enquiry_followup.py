@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from agent.doctor_request import names_a_doctor
+
 # Which slot each stateless enquiry intent resolves its "subject" from.
 # department_query has no such slot (symptom_description is free text,
 # not a lookup key) -- it is not coreference-resolvable and is left out.
@@ -188,6 +190,11 @@ def resolve_followup_slot(
         return slots, False
     value = slots.get(needed_kind)
     pointed = bool(value) and is_reference_only(value, lang)  # "the same test": a reference, not a name
+    if value and needed_kind == "doctor_name" and not names_a_doctor(value):
+        # "উনি" ("he"), "বসেন" ("sits"), "a doctor": the model copied a word into the doctor slot that names nobody.
+        # Treated exactly like a pointing word -- the doctor being discussed, if there is exactly one -- and never sent
+        # to the clinic as a name (live call 2026-10-07: "'উনি' নামে কোনো ডাক্তার আমাদের এখানে নেই").
+        pointed = True
     if value and not pointed:
         return slots, False  # the caller named something: use it
     if not last_entities:

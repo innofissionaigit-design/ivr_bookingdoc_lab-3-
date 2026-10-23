@@ -29,9 +29,11 @@
 > §30 convention — **Current implementation**, **Known gap**, **Unmeasured**.
 >
 > **Current implementation — from the multilingual side**
-> - Per-utterance reply language (`docs/adr/0002`). `REPLY_LANGUAGE_MODE`
->   defaults to `per_utterance`; `sticky` restores the pre-ADR-0002 behaviour.
->   The call's language is no longer latched at the greeting.
+> - The first real sentence fixes the call's language (`docs/adr/0003`, which
+>   supersedes ADR 0002 §1's default). `REPLY_LANGUAGE_MODE` defaults to
+>   `sticky`; `per_utterance` (ADR 0002) is still supported as the rollback. A
+>   bare "hello" / yes / one word does not fix it; nothing moves it
+>   afterwards, an explicit "speak in Hindi" included.
 > - Early language ID on the first words of a turn (`agent/early_lid.py`),
 >   used when decisive so the whole utterance is not identified twice.
 > - Language-ambiguity backstop: after too many consecutive turns where LID is

@@ -245,7 +245,14 @@ async def test_a_hospital_sentence_is_never_closed_as_unrelated_even_if_the_mode
     # deterministic lookup_booking net ("the number you booked from"), which reaches "mera appointment check
     # karna tha" before the model is asked at all. Both are hospital answers; this accepts either wording.
     # The assertions BELOW are the actual safety guarantee and are unchanged.
-    answered_as_hospital = "phone number" in text_of(said) or "number you booked from" in text_of(said)
+    # DELIBERATE SPEC CHANGE (2026-10-07): a lab-report request now goes to the counter, deterministically and before
+    # the model (agent/report_request.py), so "sorry wrong number, actually I wanted my report" is answered with the
+    # counter -- a third hospital answer, accepted here alongside the two above.
+    answered_as_hospital = (
+        "phone number" in text_of(said)
+        or "number you booked from" in text_of(said)
+        or phrase("report_counter_only", "en") in text_of(said)
+    )
     assert said == [phrase("unclear", "en")] or answered_as_hospital
     assert FIRST["en"] not in text_of(said) and FINAL["en"] not in text_of(said)
     assert (

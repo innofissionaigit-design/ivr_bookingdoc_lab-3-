@@ -121,7 +121,7 @@ def test_bengali_decisions_match_the_frozen_pre_change_module_except_where_a_gen
     corpus = _bengali_corpus(catalogue_payload)
     assert len(corpus) > 1000
     identical = lower = abstained = 0
-    generic = {"টেস্ট", "টেস্টের"}
+    generic = {"টেস্ট", "টেস্টের", "পরীক্ষা"}  # "পরীক্ষা" is a generic test word since 2026-10-22 (agent/fast_path.py)
     for u in corpus:
         a, b = old.resolve(u), new.resolve(u, "bn")
         if a is None and b is None:

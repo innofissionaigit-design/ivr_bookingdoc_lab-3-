@@ -41,6 +41,22 @@ _EN = [
         r"\b(human being|real person|live agent|customer (care|service|support)|call ?center|call centre)\b", re.I
     ),
     re.compile(r"\bnot (a )?(robot|bot|machine)\b", re.I),
+    # The BARE IMPERATIVE. Every pattern above needs either a preposition
+    # ("put me THROUGH TO a person") or a verb of wanting ("I NEED someone"),
+    # so "give me a human" and "human please" -- no preposition, no verb of
+    # wanting -- matched nothing and went to the model. That is the wrong way
+    # round: the clipped, prepositionless form is what an already-exasperated
+    # caller uses, so it is the phrasing that most needs to escalate on the
+    # turn rather than after another round trip.
+    #
+    # _EN_PERSON_ONLY, not _EN_PERSON: the narrower list exists because
+    # "counter", "staff" and "manager" appear in ordinary enquiries, and
+    # without a preposition to anchor them "give me the counter number" would
+    # otherwise escalate. The negation guard in asks_for_a_person() applies to
+    # these two exactly as it does to every pattern above, so "don't give me a
+    # human" still does not escalate.
+    re.compile(rf"\b(give|get|put|pass|send)\s+me\s+{_EN_PERSON_ONLY}\b", re.I),
+    re.compile(rf"^\s*{_EN_PERSON_ONLY}\s*[,.]?\s*please\b", re.I),
 ]
 # ---- Bengali -------------------------------------------------------------
 _BN = [

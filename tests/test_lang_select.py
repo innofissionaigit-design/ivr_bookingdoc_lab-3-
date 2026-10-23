@@ -2,6 +2,8 @@
 
 import dataclasses
 
+import pytest
+
 from agent.lang_select import languages_to_verify, pick_candidate, speakable
 
 
@@ -135,11 +137,38 @@ def test_the_live_pod_case_language_id_said_bengali_95_and_the_hindi_engine_must
     assert pick_candidate([("bn", bn), ("hi", hi), ("en", en)], scores, None)[0] == "bn"
 
 
-def test_a_call_that_has_been_in_bengali_does_not_switch_to_hindi_unless_language_id_believes_it():
-    bn = R("বাংলা কথা", 0.30)
-    hi = R("हिंदी बात", 0.80)
-    assert pick_candidate([("bn", bn), ("hi", hi)], {"bn": 0.60, "hi": 0.40}, "bn")[0] == "bn"  # 0.40 < 0.50
-    assert pick_candidate([("bn", bn), ("hi", hi)], {"bn": 0.20, "hi": 0.80}, "bn")[0] == "hi"  # LID believes Hindi
+def test_a_call_that_has_been_in_bengali_does_not_switch_to_hindi_unless_language_id_is_decisive():
+    """SPEC CHANGE 2026-10-07. This test used to assert that hi 0.80 / bn 0.20 moves a Bengali call to Hindi ("LID believes
+    Hindi"). Those are the exact scores of the live turn that did so wrongly: a Bengali caller said only a doctor's name,
+    which sounds the same in both languages, and was answered in Hindi from then on. The system's own log called that
+    turn "not decisive", and every genuine-language turn on the pod scored 1.00. Leaving the call's language now takes a
+    decisive language ID (agent/lang_select.SWITCH_MIN_LID); a genuine change still gets one, see the next tests."""
+    # What the two recognisers write for one genuinely HINDI sentence: Hindi grammar in the Hindi transcript, none of
+    # Bengali's in the Bengali one (it can only transliterate).
+    bn = R("সিবিসি টেস্ট কা রেট কিতনা হে", 0.30)
+    hi = R("सीबीसी टेस्ट का रेट कितना है", 0.80)
+    assert pick_candidate([("bn", bn), ("hi", hi)], {"bn": 0.60, "hi": 0.40}, "bn")[0] == "bn"
+    assert pick_candidate([("bn", bn), ("hi", hi)], {"bn": 0.20, "hi": 0.80}, "bn")[0] == "bn"  # a lean, not a switch
+    assert pick_candidate([("bn", bn), ("hi", hi)], {"bn": 0.02, "hi": 0.98}, "bn")[0] == "hi"  # decisive: switch
+
+
+def test_the_live_name_only_turn_stays_bengali():
+    """Logged 2026-10-07: LID hi {'bn': 0.2, 'en': 0.0, 'hi': 0.8} -> ran hi+en, chose hi. Bengali was never run."""
+    from agent.lang_select import engines_needed
+
+    scores = {"bn": 0.2, "en": 0.0, "hi": 0.8}
+    assert "bn" in engines_needed("hi", scores, ("bn", "hi", "en"), prior="bn")  # the call's own language is run
+    bn = R("ডক্টর দেবাশিস দাস", 0.67)
+    hi = R("डॉ देवाशीज दास", 0.50)
+    en = R("doctor debashis das", 0.33)
+    assert pick_candidate([("hi", hi), ("en", en), ("bn", bn)], scores, "bn")[0] == "bn"
+
+
+def test_engines_needed_without_a_prior_is_unchanged():
+    from agent.lang_select import engines_needed
+
+    assert engines_needed("hi", {"bn": 0.2, "en": 0.0, "hi": 0.8}, ("bn", "hi", "en")) == ["hi", "en"]
+    assert engines_needed("bn", {"bn": 0.95, "en": 0.0, "hi": 0.05}, ("bn", "hi", "en"), prior="bn") == ["bn", "en"]
 
 
 def test_a_genuine_hindi_caller_on_the_first_turn_is_still_recognised():
@@ -237,3 +266,36 @@ def test_without_language_id_scores_the_english_gate_is_the_old_one():
     bn = R("হোয়াট ইজ দ্য প্রাইজ", 1.00)
     en = R("sibisi tester rate koto", 1.00)
     assert pick_candidate([("bn", bn), ("en", en)])[0] == "en"  # no scores: unchanged behaviour
+
+
+# ---- decisive language ID is still not enough on loanwords (live, 2026-10-07) -------------------------------------
+
+
+def test_a_decisive_hindi_reading_of_bengali_loanwords_does_not_move_the_call():
+    """Logged: "ভিটামিন সি টেস্টের দাম কত?" -> LID hi 0.97, committed Hindi. The Bengali transcript has Bengali grammar
+    (the -এর ending, "কত"); the Hindi one has no Hindi grammar at all."""
+    bn = R("ভিটামিন সি টেস্টের দাম কত", 0.67)
+    hi = R("विटामिन सी टेस्टिड दांग", 0.67)
+    assert pick_candidate([("hi", hi), ("bn", bn)], {"bn": 0.02, "hi": 0.98}, "bn")[0] == "bn"
+
+
+@pytest.mark.parametrize(
+    "hi_text,bn_text,switch",
+    [
+        ("विटामिन सी टेस्टिड दांग", "ভিটামিন সি টেস্টের দাম কত", False),  # Bengali loanword sentence
+        ("डॉ देवाशीज दास", "ডক্টর দেবাশিস দাস", False),  # a name has no grammar in either: stay
+        ("सीबीसी टेस्ट का रेट कितना है", "সিবিসি টেস্ট কা রেট কিতনা হে", True),  # genuine Hindi
+        ("मेरी रिपोर्ट तैयार हो गई क्या", "মেরি রিপোর্ট তৈয়ার হো গয়ি ক্যা", True),
+        ("की के तो से", "কি কে তো সে", False),  # sound-alikes prove nothing either way
+    ],
+)
+def test_the_transcripts_decide_a_bengali_hindi_switch(hi_text, bn_text, switch):
+    from agent.lang_select import transcript_supports_switch
+
+    assert transcript_supports_switch("hi", hi_text, "bn", bn_text) is switch
+
+
+def test_english_is_not_judged_by_this_gate():
+    from agent.lang_select import transcript_supports_switch
+
+    assert transcript_supports_switch("en", "what is the price", "bn", "দাম কত") is True

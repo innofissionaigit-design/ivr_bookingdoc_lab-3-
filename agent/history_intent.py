@@ -75,6 +75,20 @@ _APPOINTMENTS = {
         r"मेरा (अगला |आने वाला )?(अपॉइंटमेंट|बुकिंग)"
     ),
 }
+# Something to be DONE with the appointment -- cancel it, move it, book one. "I want to cancel my appointment"
+# matched "my appointment" above and went into the record-verification flow, so the cancel flow never ran
+# (Bengali and English; the Hindi wording happened to miss). Such a turn is not a question about history:
+# it is left to the booking flows, which find the booking themselves.
+_APPOINTMENT_ACTION = {
+    "en": re.compile(
+        r"\b(cancel\w*|reschedul\w*|postpone\w*|prepone\w*|move|shift|change|book|want|need|would like|'d like)\b", re.I
+    ),
+    "bn": re.compile(
+        r"বাতিল|ক্যানসেল|ক্যান্সেল|সরা(তে|বো|ব|ন|নো)|পাল্টা|বদলা|পিছিয়ে|পেছা|চাই|লাগবে|দরকার|বুক কর|করতে হবে"
+    ),
+    "hi": re.compile(r"कैंसिल|कैन्सिल|रद्द|बदल|शिफ्ट|आगे बढ़ा|पीछे कर|चाहिए|चाहता|चाहती|बुक कर|करना है|करनी है"),
+}
+
 _MEDICINES = {
     "en": re.compile(
         r"\b(what|which) (medicines?|medications?|drugs?|tablets?) (was|were|have|did) (i|prescribed|given)|"
@@ -110,8 +124,9 @@ def detect_history_question(text: str, lang: str = "en") -> HistoryQuestion | No
     for lg in dict.fromkeys((lang, "en", "bn", "hi")):
         if _MEDICINES[lg].search(t):
             return HistoryQuestion("medicines")
+    acting = any(_APPOINTMENT_ACTION[lg].search(t) for lg in ("en", "bn", "hi"))
     for lg in dict.fromkeys((lang, "en", "bn", "hi")):
-        if _APPOINTMENTS[lg].search(t):
+        if not acting and _APPOINTMENTS[lg].search(t):
             return HistoryQuestion("appointments")
     for lg in dict.fromkeys((lang, "en", "bn", "hi")):
         if _RECENT[lg].search(t):

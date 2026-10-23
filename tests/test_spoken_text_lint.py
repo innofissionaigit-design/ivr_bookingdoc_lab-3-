@@ -37,8 +37,11 @@ from agent.spoken_text_lint import find_artifacts, has_spoken_artifact, scan_sou
 # this (never raise it) as reply_templates.py/reply_templates_i18n.py
 # get reworded to natural clauses.
 _KNOWN_BACKLOG = {
-    "agent/reply_templates.py": 10,  # lowered from 12: the booking-lookup field labels became a sentence
-    "agent/reply_templates_i18n.py": 20,  # lowered from 24: the same, in Hindi and English
+    # lowered from 12, then from 10 (2026-10-07): the booking-lookup field labels, then the doctor-availability
+    # labels ("সময়:", "পরবর্তী উপলব্ধ দিন:") became sentences
+    "agent/reply_templates.py": 8,
+    # lowered from 24, then from 20 (2026-10-07): the same, in Hindi and English
+    "agent/reply_templates_i18n.py": 17,
 }
 
 

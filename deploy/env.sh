@@ -7,6 +7,41 @@
 # hypothetical: the ollama binary and the entire Postgres installation
 # have each been lost to it three times.
 
+# Host-specific overrides, sourced FIRST so every `${X:-default}` below sees
+# them and keeps them. These are deliberately not written into this file:
+# they are properties of the box the stack happens to run on, not of the
+# stack. The Vast.ai pilot pod needs three (deploy/vast/provision.sh writes
+# them): the platform's own Jupyter already owns 8080 so the clinic API
+# cannot have it, only container ports 10100/10200 are NAT'd to a public
+# port so the orchestrator must bind those, and that image pins
+# UV_NO_CACHE=1 + UV_LINK_MODE=copy in /etc/environment, which would give
+# every venv its own 3.9 GB copy of torch instead of a hardlink to one.
+if [ -f /workspace/.host_env ]; then
+    . /workspace/.host_env
+fi
+
+# Headless, always. coqui-tts's vocoder package imports matplotlib at module
+# scope (TTS/vocoder/utils/generic_utils.py -> pyplot), so whatever backend
+# the surrounding environment names is loaded just to import a TTS model --
+# and matplotlib raises on a backend whose package is absent rather than
+# falling back. Concretely: a Jupyter kernel exports
+# MPLBACKEND=module://matplotlib_inline.backend_inline, matplotlib_inline is
+# not in tts_venv, and tts_server.py died at import with
+# "Key backend: ... is not a valid value" -- but only when the stack was
+# started FROM Jupyter, which on a Vast.ai box is the default way in. Started
+# over ssh the same code came up fine, which is exactly the kind of
+# works-on-my-terminal difference that costs an afternoon. Agg needs no
+# display and no extra package.
+export MPLBACKEND=Agg
+# The clinic's clock. The agent works out "today" in India time itself (agent/spoken_date.clinic_today), but
+# clinic-api's date checks ("date in the past", today's chamber already over) use the process clock -- on a
+# pod left on UTC that is still yesterday until 05:30 in Kolkata, and the two would disagree about "আজ".
+export TZ="${TZ:-Asia/Kolkata}"
+# "What have I booked?" is verified by the number booked from AND the patient's name on the booking -- the two
+# things a phone booking collects (main.py _lookup_verification says why the security questions cannot work for
+# a phone-booked patient). Unset, or "security", restores the date-of-birth / patient-ID questions.
+export LOOKUP_VERIFICATION="${LOOKUP_VERIFICATION:-name}"
+
 export HF_HOME=/workspace/.cache/huggingface
 export TORCH_HOME=/workspace/.cache/torch
 export HF_HUB_ENABLE_HF_TRANSFER=0
@@ -18,6 +53,21 @@ export OLLAMA_MODELS=/workspace/.ollama/models
 export OLLAMA_KEEP_ALIVE=-1
 
 export PYTHONPATH=/workspace/kolkata-care-voice-agent:
+
+# ---- service ports -------------------------------------------------------
+# Defaults are the ports this stack has always used; every one is
+# overridable because the host does not always get to choose them. On the
+# Vast.ai pilot pod, concretely: the platform's own Jupyter already owns
+# 8080, so the clinic API cannot have it, and only two container ports
+# (10100/10200) are NAT'd to a public port, so the orchestrator has to bind
+# those rather than 8100/8101. Hardcoding them made the stack unportable
+# for no benefit -- see deploy/vast/start_vast.sh for the override set.
+# Keep these as `${X:-default}`: start_all.sh and the Vast entrypoint both
+# rely on a pre-set value winning.
+export TTS_PORT=${TTS_PORT:-8002}
+export CLINIC_API_PORT=${CLINIC_API_PORT:-8080}
+export VOICE_AGENT_PORT=${VOICE_AGENT_PORT:-8100}
+export VOICE_PCM_PORT=${VOICE_PCM_PORT:-8101}
 
 # ASR checkpoints -- pilot single-L4 architecture (docs/adr/0001), three
 # routed models. Bengali and Hindi are the AI4Bharat NeMo-fork checkpoints
@@ -56,7 +106,7 @@ export TTS_CHECKPOINTS_ROOT=/workspace/tts_checkpoints
 # sqlite:////workspace/clinic.db, which persists across restarts. Postgres
 # physically cannot run on this volume -- see that file's docstring. Set
 # this only when pointing at a real external Postgres.
-export CLINIC_API_BASE=http://localhost:8080
+export CLINIC_API_BASE=http://localhost:${CLINIC_API_PORT}
 
 # The internal services (TTS, clinic API, English ASR) are reached only by the orchestrator on this
 # machine, so they bind to loopback unless told otherwise. Only the orchestrator ports are public.
@@ -70,7 +120,7 @@ if [ -f /workspace/.clinic_api_token ]; then
     export CLINIC_API_TOKEN
     CLINIC_API_TOKEN=$(cat /workspace/.clinic_api_token)
 fi
-export TTS_URL=http://localhost:8002/synthesize
+export TTS_URL=http://localhost:${TTS_PORT}/synthesize
 export SILERO_VAD_REPO=/workspace/silero-vad
 
 # /workspace/bin first: that is where the persistent ollama binary lives

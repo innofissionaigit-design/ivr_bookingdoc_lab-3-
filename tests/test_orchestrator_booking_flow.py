@@ -87,6 +87,14 @@ class FakeTools:
     async def set_patient_senior(self, phone, value):
         return None
 
+    async def doctors_mentioned(self, text):
+        # The real clinic reads the whole sentence against its doctor table (clinic-api/doctor_mention.py). The
+        # sentences in these suites are scripted, so it names nobody and the model's slot decides, as it always did.
+        return {"found": False, "count": 0, "doctors": []}
+
+    async def list_departments(self):
+        return {"found": True, "departments": [{"name": "Cardiology"}, {"name": "Orthopaedics"}]}
+
 
 @pytest.fixture(scope="module")
 def m():

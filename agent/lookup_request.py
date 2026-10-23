@@ -32,8 +32,11 @@ THE RULE. All three must hold:
       that same booking            already has, but what it ASKS FOR is a home visit, not a read-back.
                                    Same shape as rule 1: a different action vetoes.
   2. a booking noun            -- appointment / booking, in any of the four scripts
-  3. an existing-booking marker -- a possessive ("আমার", "my"), an existence or past verb
-                                  ("আছে", "ছিল", "है", "बुक है"), or a bare "when" ("কবে", "कब")
+  3. an existing-booking marker -- an existence or past verb ("আছে", "ছিল", "है", "बुक है"),
+                                  a "when" ("কবে", "कब"), or an English question form ("do I have",
+                                  "when is"). A possessive ALONE is not one: "আমার মায়ের জন্য ডাক্তার
+                                  সেনের অ্যাপয়েন্টমেন্ট", "An appointment with Dr Sen for my mother" are
+                                  new bookings, and were read back as lookups while "my" counted.
 
 Precision over recall on purpose: 2 and 3 together are what separate "my appointment" from
 "an appointment", and the veto in 1 is what stops a sentence that contains both a possessive and
@@ -50,6 +53,8 @@ from __future__ import annotations
 import re
 import unicodedata
 
+from agent.earliest_request import wants_earliest
+
 # Indic scripts have no usable \b, so a cue is matched at a word START -- a suffixed form
 # ("অ্যাপয়েন্টমেন্টটা", "অ্যাপয়েন্টমেন্টের") still matches, and the cue cannot fire inside an
 # unrelated word. Same idiom as agent/earliest_request.py.
@@ -60,12 +65,14 @@ _INDIC_LETTER = r"[ঀ-৿ऀ-ॿ]"
 _WANT_INDIC = (
     # Bengali
     "চাই", "চাইছি", "চাচ্ছি", "দরকার", "করতে চাই", "করবেন", "করে দিন", "করা যাবে", "নিতে চাই",
+    "লাগবে", "করাব", "করাবো", "দেখাব", "দেখাবো", "দেখাতে চাই",
     # Hindi
     "चाहिए", "चाहता", "चाहती", "करना है", "करवाना है", "करा दीजिए", "बुक कर", "लेना है",
+    "करनी है", "करानी है", "करवानी है", "दिखाना है", "बुकिंग करनी",
 )
 _WANT_LATIN = re.compile(
     r"\b(?:i\s+want|i\s+need|i'?d\s+like|i\s+would\s+like|can\s+i\s+(?:get|book|have)|"
-    r"book\s+me|please\s+book|make\s+(?:me\s+)?an?\s+appointment|"
+    r"book\s+me|please\s+book|^\s*book|make\s+(?:me\s+)?an?\s+appointment|"
     r"chai|chaai|lagbe|dorkar|korte\s+chai|chahiye)\b",
     re.IGNORECASE,
 )
@@ -103,17 +110,18 @@ _NOUN_LATIN = re.compile(r"\b(?:appointment|appointments|appt|booking|booked|slo
 # 3. Something that marks it as one they ALREADY have: whose it is, that it exists, that it was
 #    made, or a bare "when is it".
 _HAVE_INDIC = (
-    # Bengali -- possessive, existence, past, and "when"
-    "আমার", "আমাদের", "আছে", "ছিল", "করেছিলাম", "করেছি", "করিয়েছিলাম", "নেওয়া আছে", "কবে", "কোন দিন",
+    # Bengali -- existence, past, and "when"
+    "আছে", "ছিল", "করেছিলাম", "করেছি", "করিয়েছিলাম", "নেওয়া আছে", "কবে", "কোন দিন",
     "কখন", "কটায়", "বুক করা", "হয়েছিল", "দেওয়া আছে",
     # Hindi
-    "मेरी", "मेरा", "मेरे", "हमारी", "है", "थी", "था", "कब", "किस दिन", "कितने बजे", "बुक है",
-    "करवाया", "कराया", "लिया था",
+    "कब", "किस दिन", "कितने बजे", "बुक है", "करवाया", "कराया", "लिया था",
 )
+# Short Hindi verbs matched as WHOLE words: "है" is also the start of "हैं" ("क्या बिना बुकिंग के सीधे आ
+# सकते हैं?" -- can I come without booking -- was read as a lookup through it).
+_HAVE_INDIC_WORDS = ("है", "थी", "था")
 _HAVE_LATIN = re.compile(
-    r"\b(?:my|our|have\s+i|did\s+i|do\s+i\s+have|when\s+is|when'?s|what\s+is|what'?s|"
-    r"amar|amader|ache|achhe|chilo|chhilo|kobe|kokhon|kon\s+din|korechilam|korechi|"
-    r"meri|mera|mere|kab)\b",
+    r"\b(?:have\s+i|did\s+i|do\s+i\s+have|when\s+is|when'?s|what\s+is|what'?s|"
+    r"ache|achhe|chilo|chhilo|kobe|kokhon|kon\s+din|korechilam|korechi|kab)\b",
     re.IGNORECASE,
 )
 
@@ -124,6 +132,12 @@ def _nfc(text: str) -> str:
 
 def _indic_hit(cues: tuple[str, ...], text: str) -> bool:
     return any(re.search(rf"(?<!{_INDIC_LETTER}){re.escape(_nfc(cue))}", text) for cue in cues)
+
+
+def _indic_word(cues: tuple[str, ...], text: str) -> bool:
+    return any(
+        re.search(rf"(?<!{_INDIC_LETTER}){re.escape(_nfc(cue))}(?!{_INDIC_LETTER})", text) for cue in cues
+    )
 
 
 def wants_new_booking(text: str) -> bool:
@@ -140,6 +154,21 @@ def asks_about_another_action(text: str) -> bool:
     return _indic_hit(_OTHER_ACTION_INDIC, t) or _OTHER_ACTION_LATIN.search(t) is not None
 
 
+def asks_for_the_earliest(text: str) -> bool:
+    """Rule 1c: "when can I GET the earliest appointment?" -- story "Caller asks for the earliest available
+    appointment". It has the noun and the "when" of rules 2 and 3, so it was read as "what have I booked" in all three
+    languages (live 2026-10-07: "डॉक्टर निर्मल रॉय का सबसे जल्दी अपॉइंटमेंट कब मिलेगा?" -> "tell me the number you booked
+    with"). agent/earliest_request.py is the one definition of that request; the booking flow already uses it."""
+    return any(wants_earliest(text, lang) for lang in ("bn", "hi", "en"))
+
+
+def mentions_a_booking(text: str) -> bool:
+    """Does the turn name an appointment / booking at all? Rule 2 on its own, exposed for
+    agent/doctor_in_department_ask.py, which must leave every sentence about a booking alone."""
+    t = _nfc(text)
+    return _indic_hit(_NOUN_INDIC, t) or _NOUN_LATIN.search(t) is not None
+
+
 def asks_what_is_booked(text: str) -> bool:
     """Is the caller asking what they already have booked?
 
@@ -148,8 +177,8 @@ def asks_what_is_booked(text: str) -> bool:
     for that reason.
     """
     t = _nfc(text)
-    if wants_new_booking(t) or asks_about_another_action(t):
+    if wants_new_booking(t) or asks_about_another_action(t) or asks_for_the_earliest(t):
         return False
     if not (_indic_hit(_NOUN_INDIC, t) or _NOUN_LATIN.search(t)):
         return False
-    return _indic_hit(_HAVE_INDIC, t) or _HAVE_LATIN.search(t) is not None
+    return _indic_hit(_HAVE_INDIC, t) or _indic_word(_HAVE_INDIC_WORDS, t) or _HAVE_LATIN.search(t) is not None

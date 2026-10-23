@@ -217,6 +217,27 @@ _RE_LATIN_FARZ_DOCTOR = re.compile(r"farz karo\b[^.?!]{0,30}\bdoctor\b", re.IGNO
 _RE_BN_DHORUN_DOCTOR = re.compile(r"ধরুন আপনি[^.?!।]{0,30}ডাক্তার")
 _RE_HI_MAAN_DOCTOR = re.compile(r"मान (?:लीजिए|लो|लीजिये)[^.?!।]{0,30}डॉक्टर")
 
+# "is my report bad?" -- the ordinary way a caller asks for an interpretation,
+# and the one the substring lists could not reach. `_BN_ABNORMAL_NORMAL`
+# already carries "রিপোর্ট খারাপ", but Bengali almost never says the two words
+# adjacent: the definite suffix attaches to the noun and a question particle
+# and an intensifier sit in between -- "আমার রিপোর্টটা কি খুব খারাপ?" -- so the
+# bounded substring missed exactly the phrasing a worried caller uses, and the
+# turn went to the model. Same reason this section exists at all.
+#
+# Deliberately only খারাপ/খराब ("bad"), not the "good" side: the positive forms
+# the lists already carry ("ভালো নাকি খারাপ") are unambiguous, whereas a bare
+# ভালো within twenty characters also matches "রিপোর্টটা কখন ভালো করে পাব" --
+# "when will I properly get the report" -- which is a collection question, not
+# a clinical one. Over-firing here costs a caller their answer and sends them
+# to a clinician for nothing, so the narrower pattern is the right trade.
+_RE_BN_REPORT_BAD = re.compile(
+    r"(?:রিপোর্ট|রেজাল্ট)(?:টা|টি|টার|টির)?[^.?!।]{0,20}খারাপ"
+)
+_RE_HI_REPORT_BAD = re.compile(
+    r"(?:रिपोर्ट|रिज़ल्ट|रिजल्ट)[^.?!।]{0,20}(?:ख़राब|खराब)"
+)
+
 # ------------------------------------- a lab parameter next to a raw number
 # A caller reading a figure off their own report and asking this system to
 # interpret it, in either order, within one clause. The parameter NAME is what
@@ -279,18 +300,59 @@ _BOOKING_CONTEXT = (
 )
 
 
+# The clinic's own tests with a digit in the name, written without it before the number check: "price of HbA1c and
+# blood sugar" must not read the "1" of HbA1c as a figure next to "sugar", while "HbA1c 7.2" still reads as a
+# reading (the spelling below is a term of its own, so the "7.2" is still a number beside a term).
+_NAMED_WITH_DIGIT = (
+    (re.compile(r"\bhba1c\b"), "hbaonec"),
+    (re.compile(r"\bb[- ]?12\b"), "btwelve"),
+    (re.compile(r"\bns1\b"), "nsone"),
+    (re.compile(r"\bt3\b"), "tthree"),
+    (re.compile(r"\bt4\b"), "tfour"),
+    (re.compile(r"\b2d\b"), "twod"),
+)
+_CLINICAL_TERMS_PLAIN = _CLINICAL_TERMS + ("hbaonec", "btwelve")
+_TERMS_RX_PLAIN = "|".join(re.escape(t) for t in _CLINICAL_TERMS_PLAIN)
+_RE_TERM_THEN_NUMBER_PLAIN = re.compile(rf"\b(?:{_TERMS_RX_PLAIN})\b[^.?!]{{0,25}}\d", re.IGNORECASE)
+_RE_NUMBER_THEN_TERM_PLAIN = re.compile(rf"\d[^.?!]{{0,25}}\b(?:{_TERMS_RX_PLAIN})\b", re.IGNORECASE)
+
+
 def _reading_a_lab_value(lowered: str, raw: str) -> bool:
-    """The term-near-number heuristic, with identifiers and booking turns excluded."""
+    """The term-near-number heuristic, with identifiers, booking turns and digits inside a test's name excluded."""
     if any(cue in lowered for cue in _BOOKING_CONTEXT) or any(cue in raw for cue in _BOOKING_CONTEXT):
         return False
     stripped = _RE_IDENTIFIER.sub(" ", lowered)
-    return bool(_RE_TERM_THEN_NUMBER.search(stripped) or _RE_NUMBER_THEN_TERM.search(stripped))
+    for rx, plain in _NAMED_WITH_DIGIT:
+        stripped = rx.sub(plain, stripped)
+    return bool(_RE_TERM_THEN_NUMBER_PLAIN.search(stripped) or _RE_NUMBER_THEN_TERM_PLAIN.search(stripped))
 
 
 _BN_CLINICAL_TERMS = ("হিমোগ্লোবিন", "সুগার", "ক্রিয়েটিনিন", "কোলেস্টেরল", "বিলিরুবিন")
 _HI_CLINICAL_TERMS = ("हीमोग्लोबिन", "शुगर", "क्रिएटिनिन", "कोलेस्ट्रॉल", "बिलीरुबिन", "शर्करा")
 # Both Indic and Latin digits turn up in real transcripts here.
 _RE_ANY_DIGIT = re.compile(r"[0-9০-৯०-९]")
+_DIGIT_RUN = re.compile(r"[0-9০-৯०-९]+")
+# A Latin letter, or a Bengali / Devanagari letter or vowel sign -- NOT a digit (those blocks hold their own digits,
+# so the digit ranges are carved out of the class).
+_RE_LETTER = re.compile(r"[A-Za-z\u0980-\u09e5\u09f0-\u09ff\u0900-\u0965\u0970-\u097f]")
+
+# Live 2026-10-12 (a whole-call matrix, tests/bn_flow_report.py): the price question "সুগার পিপি, এইচবিএ১সি আর
+# ভিটামিন ডি করাতে কত লাগবে" -- "how much for sugar PP, HbA1c and vitamin D" -- was answered "এটা একজন ডাক্তারের
+# ব্যাখ্যা করার বিষয়" and handed to a clinician. The "১" is part of the TEST'S NAME (এইচবিএ১সি = HbA1c, ভিটামিন
+# বি১২, ডেঙ্গু এনএস১), not a reading, and "সুগার" in the same sentence made a clinical term with a "number" beside it.
+# A figure read off a report stands on its own ("সুগার ২৫০"). A digit written INSIDE a word is a name.
+_GLUED_VALUE_DIGITS = 3  # ... unless the run is long enough to be a value that was merely run together
+
+
+def _has_a_value_digit(window: str) -> bool:
+    """A number in `window` that is a figure, not a digit inside a test's name."""
+    for m in _DIGIT_RUN.finditer(window):
+        before = window[m.start() - 1] if m.start() else ""
+        after = window[m.end()] if m.end() < len(window) else ""
+        glued = bool(before and _RE_LETTER.match(before)) or bool(after and _RE_LETTER.match(after))
+        if not glued or len(m.group(0)) >= _GLUED_VALUE_DIGITS:
+            return True
+    return False
 
 
 def _indic_value_mention(text: str, terms: tuple[str, ...], char_class: str) -> bool:
@@ -304,7 +366,7 @@ def _indic_value_mention(text: str, terms: tuple[str, ...], char_class: str) -> 
             continue
         idx = text.find(term)
         window = text[max(0, idx - 25) : idx + len(term) + 25]
-        if _RE_ANY_DIGIT.search(window):
+        if _has_a_value_digit(window):
             return True
     return False
 
@@ -344,4 +406,6 @@ def is_clinical_interpretation(text: str) -> bool:
         or _RE_LATIN_FARZ_DOCTOR.search(lowered)
         or _RE_BN_DHORUN_DOCTOR.search(t)
         or _RE_HI_MAAN_DOCTOR.search(t)
+        or _RE_BN_REPORT_BAD.search(t)
+        or _RE_HI_REPORT_BAD.search(t)
     )

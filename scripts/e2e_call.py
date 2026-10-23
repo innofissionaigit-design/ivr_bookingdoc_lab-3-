@@ -31,6 +31,9 @@ import soundfile as sf
 RATE = 16000
 CHUNK_S = 0.1
 TAIL_SILENCE_S = 1.8  # enough for the turn detector to call the utterance finished
+# How long to keep reading after the reply's first audio frame, for the
+# transcript and reply text that follow it. See collect_turn's docstring.
+DRAIN_S = 1.5
 
 
 def load_16k_mono(path: str) -> np.ndarray:
@@ -63,20 +66,41 @@ async def stream(ws, samples: np.ndarray, speed: float) -> float:
     return t_end
 
 
-async def collect_turn(ws, timeout_s: float) -> dict:
-    """Read frames until a reply's audio has arrived. Returns what was seen."""
+async def collect_turn(ws, timeout_s: float, drain_s: float = DRAIN_S) -> dict:
+    """Read frames until a reply's audio has arrived AND its text caught up.
+
+    Returning on the first audio frame is wrong, and was: on a caller turn
+    the server sends the reply AUDIO first and the "User"/"AI" text frames
+    after it, because getting audio moving is what the caller hears as
+    latency. A harness that stopped at the first byte therefore reported
+    `heard: None` on a turn the agent had transcribed perfectly well, and
+    -- worse -- closed the socket while the server was still sending, so
+    every run left a ClientDisconnected traceback in the service log that
+    looked like a server fault and was not.
+
+    So the first audio frame starts a short drain window instead of ending
+    the turn: keep reading until the transcript and the reply text have both
+    arrived, or `drain_s` passes. Accumulating frames for that window also
+    makes audio_bytes the whole clip rather than just its first chunk.
+    """
     turn = {"user": None, "ai": [], "audio_bytes": 0, "first_audio_at": None, "handoff": None}
     deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
+    drain_deadline: float | None = None
+    while True:
+        now = time.monotonic()
+        limit = deadline if drain_deadline is None else min(deadline, drain_deadline)
+        if now >= limit:
+            break
         try:
-            msg = await asyncio.wait_for(ws.recv(), timeout=max(0.1, deadline - time.monotonic()))
-        except TimeoutError:
+            msg = await asyncio.wait_for(ws.recv(), timeout=max(0.05, limit - now))
+        except (TimeoutError, asyncio.TimeoutError):
             break
         if isinstance(msg, bytes):
             if turn["first_audio_at"] is None:
                 turn["first_audio_at"] = time.monotonic()
+                drain_deadline = turn["first_audio_at"] + drain_s
             turn["audio_bytes"] += len(msg)
-            return turn  # one reply clip per turn is what we asked for
+            continue
         data = json.loads(msg)
         if data.get("type") == "handoff_human":
             turn["handoff"] = data.get("reason")
@@ -84,6 +108,10 @@ async def collect_turn(ws, timeout_s: float) -> dict:
             turn["user"] = data["text"]
         elif data.get("sender") == "AI":
             turn["ai"].append(data["text"])
+        # Everything this turn was waiting for has arrived; no need to sit
+        # out the rest of the drain window.
+        if turn["first_audio_at"] is not None and turn["user"] and turn["ai"]:
+            break
     return turn
 
 
@@ -123,7 +151,24 @@ async def run(args) -> list[dict]:
             )
             if turn["handoff"]:
                 break
+
+        # Let the server finish whatever it was mid-send before the context
+        # manager closes the socket under it. Without this the last turn of
+        # every run ends in a ClientDisconnected traceback on the server --
+        # a harness artifact that reads exactly like a server bug.
+        await _quiet_drain(ws, 0.5)
     return results
+
+
+async def _quiet_drain(ws, seconds: float) -> None:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            await asyncio.wait_for(ws.recv(), timeout=max(0.05, deadline - time.monotonic()))
+        except (TimeoutError, asyncio.TimeoutError):
+            return
+        except Exception:  # noqa: BLE001 - already closing; nothing to salvage
+            return
 
 
 def main() -> None:

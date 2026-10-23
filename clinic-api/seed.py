@@ -14,6 +14,7 @@ from db import SessionLocal, engine
 from i18n_content import (
     DEFAULT_PREP_EN,
     DEFAULT_PREP_HI,
+    DEPARTMENT_NAMES_I18N,
     FAQ_I18N,
     FAQ_KEYWORDS_I18N,
     PREP_I18N,
@@ -223,12 +224,12 @@ LAB_TESTS = [
     ("ESR", ["ইএসআর", "ই এস আর"], 150, "Blood", 6),
     ("Blood Sugar Fasting", ["ব্লাড সুগার ফাস্টিং", "সুগার ফাস্টিং", "খালি পেটে সুগার"], 120, "Blood", 4),
     ("Blood Sugar PP", ["সুগার পিপি", "পিপি সুগার", "খাওয়ার পরে সুগার"], 120, "Blood", 4),
-    ("HbA1c", ["এইচবিএ১সি", "হিমোগ্লোবিন এ১সি"], 650, "Blood", 24),
+    ("HbA1c", ["এইচবিএ১সি", "হিমোগ্লোবিন এ১সি", "এইচবিএ ওয়ান সি"], 650, "Blood", 24),
     ("Lipid Profile", ["লিপিড প্রোফাইল", "কোলেস্টেরল টেস্ট"], 650, "Blood", 24),
     ("Liver Function Test (LFT)", ["লিভার ফাংশন টেস্ট", "এলএফটি", "লিভার টেস্ট"], 800, "Blood", 24),
     ("Kidney Function Test (KFT)", ["কিডনি ফাংশন টেস্ট", "কেএফটি", "কিডনি টেস্ট"], 750, "Blood", 24),
     ("Thyroid Profile (T3 T4 TSH)", ["থাইরয়েড প্রোফাইল", "থাইরয়েড টেস্ট"], 700, "Blood", 24),
-    ("TSH", ["টিএসএইচ"], 350, "Blood", 24),
+    ("TSH", ["টিএসএইচ", "টি এস এইচ"], 350, "Blood", 24),
     ("Urine Routine Examination", ["ইউরিন টেস্ট", "প্রস্রাব পরীক্ষা", "ইউরিন রুটিন"], 200, "Urine", 6),
     ("Widal Test", ["ওয়াইডাল টেস্ট", "উইডাল টেস্ট", "টাইফয়েড টেস্ট"], 250, "Blood", 12),
     ("Dengue NS1 Antigen", ["ডেঙ্গু এনএস১", "ডেঙ্গু টেস্ট"], 900, "Blood", 6),
@@ -240,7 +241,7 @@ LAB_TESTS = [
     ("Serum Creatinine", ["ক্রিয়াটিনিন", "সিরাম ক্রিয়াটিনিন"], 250, "Blood", 12),
     ("Serum Electrolytes", ["ইলেক্ট্রোলাইটস", "ইলেকট্রোলাইট টেস্ট"], 450, "Blood", 12),
     ("Blood Grouping & Rh Typing", ["ব্লাড গ্রুপ", "রক্তের গ্রুপ"], 200, "Blood", 4),
-    ("HIV Test (ELISA)", ["এইচআইভি টেস্ট", "এইডস টেস্ট"], 500, "Blood", 24),
+    ("HIV Test (ELISA)", ["এইচআইভি টেস্ট", "এইডস টেস্ট", "এইচআইভি"], 500, "Blood", 24),
     ("HBsAg", ["এইচবিএসএজি", "হেপাটাইটিস বি"], 400, "Blood", 24),
     ("HCV", ["এইচসিভি", "হেপাটাইটিস সি"], 600, "Blood", 24),
     ("ECG", ["ইসিজি", "ইলেক্ট্রোকার্ডিওগ্রাম"], 300, "Cardiac", 1),
@@ -250,7 +251,7 @@ LAB_TESTS = [
     ("2D Echocardiography", ["ইকো টেস্ট", "একোকার্ডিওগ্রাফি", "ইকোকার্ডিওগ্রাম"], 2000, "Cardiac", 4),
     ("TMT (Treadmill Test)", ["টিএমটি", "ট্রেডমিল টেস্ট"], 2200, "Cardiac", 4),
     ("Pap Smear", ["প্যাপ স্মিয়ার"], 900, "Sample (Cervical)", 72),
-    ("PSA (Prostate Specific Antigen)", ["পিএসএ"], 900, "Blood", 48),
+    ("PSA (Prostate Specific Antigen)", ["পিএসএ", "পি এস এ", "পসা"], 900, "Blood", 48),  # "পসা": the Bengali recogniser's own reading of the three letters (live 2026-10-16)
     ("Uric Acid", ["ইউরিক অ্যাসিড", "ইউরিক এসিড", "ইউরিক এসিদ"], 250, "Blood", 12),
     ("Calcium (Serum)", ["ক্যালসিয়াম", "সিরাম ক্যালসিয়াম"], 250, "Blood", 12),
 ]
@@ -290,12 +291,31 @@ def _prep_for(test_name: str) -> tuple[bool, str]:
 FAQ_ENTRIES = [
     (
         "hours",
-        ["সময়", "কখন খোলে", "কখন বন্ধ", "খোলা থাকে", "ভিজিটিং আওয়ার্স", "ক্লিনিকের সময়"],
+        [
+            "সময়", "কখন খোলে", "কখন বন্ধ", "খোলা থাকে", "ভিজিটিং আওয়ার্স", "ক্লিনিকের সময়",
+            # live 2026-10-07: "আপনাদের ওখানে কখন খোলা থাকবে" / "কখন খোলা আপনাদের ক্লিনিক" matched nothing
+            "কখন খোলা", "খোলা থাকবে", "খোলা আছে", "কটায় খোলে", "কটা পর্যন্ত খোলা", "কটা থেকে খোলা",
+            "কখন বন্ধ হয়", "খোলার সময়", "বন্ধের সময়", "টাইমিং", "রবিবার খোলা",
+        ],
         "আমাদের ক্লিনিক প্রতিদিন সকাল আটটা থেকে রাত আটটা পর্যন্ত খোলা থাকে, রবিবার সকাল আটটা থেকে দুপুর দুটো পর্যন্ত।",
     ),
     (
         "location",
-        ["কোথায়", "ঠিকানা", "লোকেশন", "কোন জায়গায়", "কীভাবে আসব"],
+        [
+            "কোথায়", "ঠিকানা", "লোকেশন", "কোন জায়গায়", "কীভাবে আসব", "কীভাবে যাব",
+            # live 2026-10-13: "আপনাদের ওখানে যাব কীভাবে?" -- the verb first, which is how it is said, and spelt কিভাবে
+            # by the recogniser -- matched nothing and reached the model, which called the caller unrelated.
+            "যাব কীভাবে", "আসব কীভাবে", "কীভাবে যেতে হবে", "কীভাবে আসতে হবে", "যেতে হবে কীভাবে", "আসতে হবে কীভাবে",
+            "কীভাবে পৌঁছাব", "কীভাবে পৌঁছব", "পৌঁছাব কীভাবে",
+            # live 2026-10-13: "ক্লিনিকের কাছাকাছি কোন ল্যান্ডমার্ক আছে" was answered with the opening HOURS (the word
+            # "ক্লিনিকের" alone is 0.78 of the hours keyword "ক্লিনিকের সময়"). The clinic's answer names City Centre 2:
+            # a landmark. Kept to long, distinctive words and short question phrases: a bare "কাছাকাছি" (nearby) is also
+            # "দশটার কাছাকাছি" (around ten), and a bare "রাস্তা" (road) is 0.72 of "সস্তা" (cheap).
+            "ল্যান্ডমার্ক", "ল্যাণ্ডমার্ক", "ল্যান্ড মার্ক", "ল্যান্ডমার্ক আছে", "কাছাকাছি কী আছে", "আশেপাশে কী আছে",
+            "কোন এলাকায়", "কোন রাস্তায়", "কোন রোডে",
+            # every spelling of "address" the recogniser has produced or plausibly would
+            "এড্রেস", "অযাড্ড্রেস", "অ্যাড্রেস", "অ্যাডড্রেস", "এ্যাড্রেস", "অ্যাড্ড্রেস", "অ্যাডরেস",
+        ],
         "আমাদের ক্লিনিক কলকাতার রাজারহাট নিউ টাউনে, সিটি সেন্টার টু-এর কাছে।",
     ),
     (
@@ -308,10 +328,10 @@ FAQ_ENTRIES = [
         ["ইনসিওরেন্স", "ইন্সুরেন্স", "বিমা", "ক্যাশলেস", "মেডিক্লেম"],
         "প্রধান বিমা সংস্থাগুলোর ক্যাশলেস সুবিধা আছে। আপনার কার্ডের নাম বললে কাউন্টার থেকে নিশ্চিত করে দেওয়া হবে।",
     ),
-    ("parking", ["পার্কিং", "গাড়ি রাখার জায়গা", "গাড়ি কোথায় রাখব"], "ক্লিনিকের নিজস্ব পার্কিং আছে, কোনো চার্জ লাগে না।"),
+    ("parking", ["পার্কিং", "গাড়ি রাখার জায়গা", "গাড়ি কোথায় রাখব", "গাড়ি রাখব", "গাড়ি রাখা যাবে"], "ক্লিনিকের নিজস্ব পার্কিং আছে, কোনো চার্জ লাগে না।"),
     (
         "report_collection",
-        ["রিপোর্ট কীভাবে পাব", "রিপোর্ট নিতে", "রিপোর্ট কোথা থেকে"],
+        ["রিপোর্ট কীভাবে পাব", "রিপোর্ট নিতে", "রিপোর্ট কোথা থেকে", "রিপোর্ট নিতে কোথায়", "রিপোর্ট কোথায় পাব"],
         "রিপোর্ট সরাসরি কাউন্টার থেকে সংগ্রহ করতে পারেন, অথবা হোয়াটসঅ্যাপ ও ইমেলেও পাঠানো হয়।",
     ),
     (
@@ -321,13 +341,16 @@ FAQ_ENTRIES = [
     ),
     (
         "home_collection",
-        ["বাড়িতে এসে", "হোম কালেকশন", "বাড়ি থেকে স্যাম্পল"],
+        ["বাড়িতে এসে", "হোম কালেকশন", "বাড়ি থেকে স্যাম্পল", "বাড়ি থেকে রক্ত", "বাড়িতে এসে রক্ত"],
         "বেশিরভাগ ব্লাড টেস্টের জন্য বাড়িতে এসে স্যাম্পল নেওয়ার সুবিধা আছে। বুক করার সময় বলে দেবেন।",
     ),
 ]
 
 
 I18N_COLUMNS = {
+    # A Bengali/Hindi department name is the difference between speaking an
+    # answer and blocking it -- see models.Department.name_bn.
+    "departments": ["name_bn", "name_hi"],
     "doctors": ["aliases_hi"],
     "lab_tests": ["aliases_hi", "prep_instructions_hi", "prep_instructions_en"],
     "faqs": ["answer_hi", "answer_en", "keywords_hi", "keywords_en"],
@@ -369,6 +392,12 @@ def backfill_i18n(db=None) -> dict:
     db = db or SessionLocal()
     filled = 0
     try:
+        for dept in db.query(Department).all():
+            spoken_bn, spoken_hi = DEPARTMENT_NAMES_I18N.get(dept.name, ("", ""))
+            for attr, val in (("name_bn", spoken_bn), ("name_hi", spoken_hi)):
+                if not getattr(dept, attr) and val:
+                    setattr(dept, attr, val)
+                    filled += 1
         for d in db.query(Doctor).all():
             if not d.aliases_hi:
                 d.aliases_hi = "|".join(SURNAME_HI.get(d.name.split()[-1], []))
@@ -409,7 +438,8 @@ def seed():
     try:
         doctor_index = 0
         for dept_name, doctors in DEPARTMENTS.items():
-            dept = Department(name=dept_name)
+            spoken_bn, spoken_hi = DEPARTMENT_NAMES_I18N.get(dept_name, ("", ""))
+            dept = Department(name=dept_name, name_bn=spoken_bn, name_hi=spoken_hi)
             db.add(dept)
             db.flush()  # get dept.id
 

@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import os
 import re
 import unicodedata
 from collections import defaultdict
@@ -70,6 +71,7 @@ from collections import defaultdict
 from agent import fast_path_cues as cues
 from agent.enquiry_followup import is_reference_only
 from agent.form_index import INDEX_MIN_FORMS, FormTable
+from agent.language_policy import foreign_script_language
 from agent.outcome_metrics import abstentions, fast_path_served
 
 logger = logging.getLogger("fast_path")
@@ -87,6 +89,31 @@ ENTITY_MATCH_FLOOR = 0.55
 # staying under the worst same-entity score (0.696) -- anything between
 # the two abstains to the LLM rather than guessing.
 COMMIT_FLOOR = 0.72
+
+# "Doctor" in every script a caller here uses (main.py's _DOCTOR_WORD, clinic-api/doctor_mention.TITLE_WORDS).
+_DOCTOR_WORD = re.compile(
+    r"(?<![ঀ-৿ऀ-ॿa-z])(?:ডাক্তার|ডক্টর|ডাঃ|ডা\.|डॉक्टर|डाक्टर|डॉ|(?:doctor|dr|daktar|doktor)(?![a-z]))", re.IGNORECASE
+)
+
+# Going, coming, the road: the sentence is about getting to the clinic (see its use in FastPath.resolve).
+_TRAVEL_WORD = re.compile(
+    r"(?<![ঀ-৿ऀ-ॿ])(?:যাব|যাবো|যাওয়া|যাওয়ার|যেতে|আসব|আসবো|আসা|আসার|আসতে|রাস্তা|রাস্তাটা|পৌঁছ[াব]*|"
+    r"जाऊँ|जाऊं|जाएँ|जाएं|जाना|आऊँ|आऊं|आएँ|आएं|आना|रास्ता)(?![ঀ-৿ऀ-ॿ])"
+)
+# A place word: a landmark, nearby, the neighbourhood, the metro. "ক্লিনিকের কাছাকাছি কোন ল্যান্ডমার্ক আছে" is about
+# WHERE, and carries no word about being open (see its use next to _TRAVEL_WORD in FastPath.resolve).
+_PLACE_WORD = re.compile(
+    r"(?<![ঀ-৿ऀ-ॿ])(?:ল্যান্ডমার্ক|ল্যাণ্ডমার্ক|ল্যান্ড মার্ক|কাছাকাছি|আশেপাশে|আশপাশে|নিকটবর্তী|এলাকা|এলাকায়|মেট্রো|"
+    r"लैंडमार्क|लैंड मार्क|आसपास|इलाके|इलाका|मेट्रो)(?![ঀ-৿ऀ-ॿ])"
+)
+# "How" in a how-do-I-get-there question (after _fold_faq: কীভাবে / কিভাবে / কি ভাবে all read কিভাবে).
+_HOW_WORD = re.compile(r"(?<![ঀ-৿ऀ-ॿ])(?:কিভাবে|कैसे)(?![ঀ-৿ऀ-ॿ])")
+# Open, closed, a time, how long: the sentence is about the hours.
+_HOURS_WORD = re.compile(
+    # No right boundary: Bengali inflects ("সময়ে", "সকালে", "রাতে"), and "at that time" is still about time.
+    r"(?<![ঀ-৿ऀ-ॿ])(?:খোলে|খোলা|খুলে|খুলবে|বন্ধ|কখন|কটা|কটায়|সময়|টাইমিং|ঘণ্টা|ঘন্টা|সকাল|রাত|দুপুর|বিকেল|সন্ধ্যা|"
+    r"खुल|खुला|बंद|कब|समय|बजे|टाइमिंग)"
+)
 
 # Same commit-without-a-model bar, applied to FAQ topic keyword phrases.
 # REASONED, not measured -- there is no real-call FAQ-question corpus yet
@@ -115,6 +142,21 @@ _RE_PUNCT = re.compile(r"[।?!,.;:'\"()\-]+")
 # longer one" discipline as agent/intent_schema.py's own postal_code normaliser, so a 7-digit
 # number (a phone fragment, say) is correctly NOT read as a PIN code here either.
 _RE_DIGIT_RUN = re.compile(r"\d+")
+
+
+# FAQ keywords are short phrases, and two things that are NOT different questions made the matcher abstain on them
+# (live 2026-10-13: "আপনাদের ওখানে যাব কিভাবে" scored 0.63 against "কীভাবে যাব", under the 0.72 floor, and went to the model,
+# which called the caller unrelated):
+#   * the spelling: the Bengali recogniser writes "কিভাবে" (short ি) or even "কি ভাবে" for what the table has as
+#     "কীভাবে"; ী/ি, ূ/ু and ঈ/ই are the same sound, so they are one letter here;
+#   * the order: "যাব কিভাবে" and "কিভাবে যাব" are the same words. A two-word keyword is also matched reversed.
+# Applied to the FAQ table and to a FAQ query only -- never to a test or a doctor, whose spelling is the answer.
+_FAQ_FOLD = str.maketrans({"\u09c0": "\u09bf", "\u09c2": "\u09c1", "\u0988": "\u0987", "\u098a": "\u0989"})
+_RE_KI_BHABE = re.compile(r"(?<![ঀ-৿])কি ভাবে(?![ঀ-৿])")
+
+
+def _fold_faq(text: str) -> str:
+    return _RE_KI_BHABE.sub("কিভাবে", text.translate(_FAQ_FOLD))
 
 
 def _normalize(text: str) -> str:
@@ -147,8 +189,31 @@ _GENERIC_TEST_WORDS = frozenset(
         "टेस्ट",
         "जांच",
         "जाँच",
+        # "পরীক্ষা" / "परीक्षण" is what a caller says for "test" as often as the English word itself
+        "পরীক্ষা",
+        "পরীক্ষার",
+        "পরীক্ষাটা",
+        "পরীক্ষাটি",
+        "পরীক্ষাগুলো",
+        "পরীক্ষাগুলি",
+        "परीक्षण",
+        "परीक्षा",
+        "परीक्षणों",
     }
 )
+
+# TEST_BARE_NAME=off restores the earlier scoring (a name said without the word "test" is scored against the whole form).
+TEST_BARE_NAME = os.environ.get("TEST_BARE_NAME", "on").strip().lower() != "off"
+
+
+def _group_names() -> frozenset[str]:
+    """The nouns of every test group that holds more than one test: said bare ("ডেঙ্গু", "লিভার", "কিডনি") they name a KIND of
+    test, which agent/test_groups.py answers, and are not matched to one test of it."""
+    from agent.test_groups import GROUPS
+
+    return frozenset(
+        _normalize(n) for g in GROUPS if len(g.tests) > 1 for n in g.nouns
+    )
 
 
 def _name_forms(name: str) -> list[str]:
@@ -191,6 +256,12 @@ class Catalogue:
             langs |= {k[len("keywords_") :] for k in row if k.startswith("keywords_")}
         # Which doctors (by position in the payload) a spoken form belongs to: "sen" belongs to every Sen. A form with
         # more than one owner is ambiguous, whatever its similarity score, and the fast path never answers on it.
+        # The doctor rows as the clinic sent them. Kept so a caller that cannot reach clinic-api's own
+        # "which doctors does this sentence name?" lookup can still say a doctor's name the way this
+        # language speaks it (main.py's _mention_from_catalogue).
+        self.doctor_rows: list[dict] = [d for d in payload.get("doctors", []) if isinstance(d, dict)]
+        # The test rows likewise (name, aliases, sample type): what agent/test_groups.py reads, with no I/O.
+        self.test_rows: list[dict] = [t for t in payload.get("tests", []) if isinstance(t, dict)]
         self._doctor_owners: dict[tuple[str, str], set[int]] = defaultdict(set)
         self._tables: dict[tuple[str, str], FormTable] = {}
         for lang in sorted(langs):
@@ -211,6 +282,8 @@ class Catalogue:
                     exact_below_chars=exact_below,
                     index_min_forms=index_min_forms,
                     generic_words=_GENERIC_TEST_WORDS if kind == "test" else frozenset(),
+                    bare_core=TEST_BARE_NAME and kind == "test",
+                    bare_block=_group_names() if kind == "test" else frozenset(),
                 )
         # the Bengali rows, under the names other code and tests have always read
         self.tests = self._tables[("test", "bn")].rows
@@ -256,10 +329,17 @@ class Catalogue:
 
     @staticmethod
     def _faq_rows(payload: dict, lang: str):
-        return [
-            (f["topic"], _dedupe(_normalize(k) for k in f.get(f"keywords_{lang}", [])))
-            for f in payload.get("faq_topics", [])
-        ]
+        rows = []
+        for f in payload.get("faq_topics", []):
+            forms: list[str] = []
+            for k in f.get(f"keywords_{lang}", []):
+                form = _fold_faq(_normalize(k))
+                forms.append(form)
+                words = form.split()
+                if f["topic"] == "location" and lang in ("bn", "hi") and len(words) == 2 and words[0] != words[1]:
+                    forms.append(f"{words[1]} {words[0]}")  # "যাব কিভাবে" is "কিভাবে যাব": the same words, the other way
+            rows.append((f["topic"], _dedupe(forms)))
+        return rows
 
     def __len__(self) -> int:
         return self._n_rows
@@ -271,9 +351,17 @@ class Catalogue:
         return self._tables.get((kind, lang))
 
     def match(
-        self, text: str, kind: str, lang: str = "bn", floor: float = 0.0, skip_name: str | None = None
-    ) -> tuple[str | None, str | None, float]:
-        """-> (canonical_key, matched_spoken_form, score). `canonical_key`
+        self,
+        text: str,
+        kind: str,
+        lang: str = "bn",
+        floor: float = 0.0,
+        skip_name: str | frozenset[str] | set[str] | None = None,
+        prefer_longer: bool = False,
+        with_window: bool = False,
+    ):
+        """-> (canonical_key, matched_spoken_form, score). With `with_window` a fourth item: the words of `text` the form
+        matched (agent/form_index.FormTable.best). `canonical_key`
         is a test/doctor name for kind in {"test", "doctor"}, or a FAQ
         topic key for kind="faq".
 
@@ -281,10 +369,22 @@ class Catalogue:
         threshold, such as the history flow, has always seen). With a floor, comparisons that provably cannot
         reach it are skipped, which is what keeps this fast (agent/form_index.py); a best score at or above the
         floor is unchanged, and below it the answer is (None, None, 0.0)."""
+        # The call may be fixed to another language than this turn was said in (docs/adr/0003): the canonical key
+        # (a test / doctor name, a FAQ topic) is language-independent, so a text in another script is read in ITS
+        # table, and only there -- in the call's, a Latin "er" (Banglish "of") is a fuzzy hit for the form "esr".
+        other = foreign_script_language(text, lang)
+        if other is not None:
+            return self._match_in(text, kind, other, floor, skip_name, prefer_longer, with_window)
+        return self._match_in(text, kind, lang, floor, skip_name, prefer_longer, with_window)
+
+    def _match_in(self, text, kind, lang, floor, skip_name, prefer_longer, with_window=False):
         table = self._tables.get((kind, lang))
         if table is None:
-            return None, None, 0.0
-        return table.best(_normalize(text).split(), floor, skip_name)
+            return (None, None, 0.0, "") if with_window else (None, None, 0.0)
+        said = _normalize(text)
+        if kind == "faq":
+            said = _fold_faq(said)
+        return table.best(said.split(), floor, skip_name, prefer_longer, with_window)
 
 
 class FastPathResult:
@@ -565,7 +665,8 @@ class FastPath:
                     score,
                     matched_form=form,
                 )
-            if not table.faq_after_failed_avail:
+            if not table.faq_after_failed_avail or _DOCTOR_WORD.search(text):
+                # A doctor was asked about, and none of ours was heard: the model's turn, never the clinic's hours.
                 self._abstain("below_commit_floor", "doctor_availability", lang)
                 return None
             # no doctor named: "what time do you open" is a clinic question, not a doctor's schedule
@@ -576,7 +677,25 @@ class FastPath:
         # is generic clinic language with no test/doctor cue word in it by
         # construction, so this cannot silently steal a
         # rate/prep/availability question -- those already returned above.
-        faq_topic, faq_form, faq_score = self.catalogue.match(text, "faq", lang, FAQ_COMMIT_FLOOR)
+        # A tie goes to the more specific phrase: "রিপোর্ট নিতে কোথায় যাব" is about reports, not the address.
+        faq_topic, faq_form, faq_score = self.catalogue.match(text, "faq", lang, FAQ_COMMIT_FLOOR, prefer_longer=True)
+        if faq_topic == "hours" and (_TRAVEL_WORD.search(text) or _PLACE_WORD.search(text)) and not _HOURS_WORD.search(text):
+            # "আপনাদের ক্লিনিকে কিভাবে যেতে হবে": the word "ক্লিনিক" sits in the hours keyword "ক্লিনিকের সময়" and carried the
+            # sentence there at 0.73, so the caller who asked the WAY was told the opening hours. A sentence with a
+            # going / coming / road word and no word about being open, closed or a time is about getting there.
+            faq_topic, faq_form, faq_score = "location", faq_form, max(faq_score, FAQ_COMMIT_FLOOR)
+        if faq_topic == "location" and faq_form and _HOW_WORD.search(faq_form) and not _HOW_WORD.search(_fold_faq(text)):
+            # matched on a "how do I get there" keyword by character similarity alone, without the word "how"
+            self._abstain("location_without_how", "clinic_faq", lang)
+            return None
+        if faq_topic and faq_score >= FAQ_COMMIT_FLOOR and _DOCTOR_WORD.search(text):
+            # Every FAQ phrase is clinic language with no doctor word in it (the comment above), so a sentence that
+            # DOES say "doctor" is not a pure FAQ question -- and a partial character match is all it can have. Live
+            # 2026-10-09, Hindi: "गायनी में दिखाना चाहता हूं डॉक्टर् का नाम बताइए" ("tell me the doctor's NAME") scored 0.78
+            # against the FAQ phrase "पता बताइए" ("tell me the ADDRESS"): one word apart, the same verb, over the 0.72
+            # floor, and the caller was read the clinic's address. The model's turn instead.
+            self._abstain("faq_with_doctor_word", "clinic_faq", lang)
+            return None
         if faq_topic and faq_score >= FAQ_COMMIT_FLOOR:
             # ADDED BY SOURAV: KCD-387 full flow. "home_collection" is the one FAQ topic that now has
             # a real, actionable intent sitting behind it (agent/llm.py's "home_collection" intent) --

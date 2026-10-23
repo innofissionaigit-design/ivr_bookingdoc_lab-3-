@@ -32,8 +32,34 @@ class Department(Base):
     __tablename__ = "departments"
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False, unique=True)
+    # How a Bengali or Hindi voice can SAY this department -- the same reason
+    # Doctor carries full_name_bn / full_name_hi below. A Latin name is not
+    # merely mispronounced on those voices, it is dropped by the tokenizer, so
+    # agent/tts.py blocks the whole reply (UnspeakableTextError) and the caller
+    # hears the system-busy fallback instead of an answer. Every reply that
+    # names a department -- symptom routing, "which doctors are in X", the
+    # department list -- was unspeakable for four of the eight seeded
+    # departments until these columns existed.
+    #
+    # Added to an existing database by seed.add_i18n_columns() and filled by
+    # seed.backfill_i18n(); empty means "not recorded", and callers fall back
+    # to `name` (which is then blocked again, visibly, rather than silently
+    # speaking a hole).
+    name_bn = Column(String, nullable=False, default="", server_default="")
+    name_hi = Column(String, nullable=False, default="", server_default="")
 
     doctors = relationship("Doctor", back_populates="department")
+
+    def spoken_name(self, lang: str) -> str:
+        """The department as `lang` should say it, falling back to the Latin
+        name. Centralised here so no caller has to remember the fallback, and
+        so there is exactly one place to change when a clinic corrects a
+        spelling."""
+        if lang == "bn":
+            return self.name_bn or self.name
+        if lang == "hi":
+            return self.name_hi or self.name
+        return self.name
 
 
 class Doctor(Base):

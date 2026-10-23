@@ -20,12 +20,28 @@ if [ -f /workspace/.voice_agent_languages ]; then
 fi
 VOICE_AGENT_LANGUAGES=${VOICE_AGENT_LANGUAGES:-bn,hi,en}
 
+# The PLATFORM's port overrides, if this box installed any. Not env.sh -- this script still deliberately does not
+# source that, for the reason the language list above gives. But /workspace/.host_env is exactly the file that moves
+# these ports off their RunPod defaults, and without it this script probed 8080/8100/8101 on a Vast instance whose
+# services were on 8081/10200/10100 and reported three healthy services as "not ready" (2026-10-09). A readiness
+# check that lies about a running stack is worse than no check: the next session chases a restart it does not need.
+# shellcheck disable=SC1091
+[ -f /workspace/.host_env ] && . /workspace/.host_env >/dev/null 2>&1
+
+# Same defaults deploy/env.sh declares, repeated for the same reason the
+# language list above is: this script deliberately does not source env.sh,
+# so it can be run against a stack whose environment it did not launch.
+TTS_PORT=${TTS_PORT:-8002}
+CLINIC_API_PORT=${CLINIC_API_PORT:-8080}
+VOICE_AGENT_PORT=${VOICE_AGENT_PORT:-8100}
+VOICE_PCM_PORT=${VOICE_PCM_PORT:-8101}
+
 echo "== services (languages: $VOICE_AGENT_LANGUAGES) =="
 probe ollama      "http://localhost:11434/api/tags"
-probe tts         "http://localhost:8002/health"
-probe clinic-api  "http://localhost:8080/api/health"
-probe voice-agent "http://localhost:8100/api/health"
-probe voice-pcm   "http://localhost:8101/api/health"
+probe tts         "http://localhost:$TTS_PORT/health"
+probe clinic-api  "http://localhost:$CLINIC_API_PORT/api/health"
+probe voice-agent "http://localhost:$VOICE_AGENT_PORT/api/health"
+probe voice-pcm   "http://localhost:$VOICE_PCM_PORT/api/health"
 case ",${VOICE_AGENT_LANGUAGES:-bn,hi,en}," in
     *,en,*) probe english-asr "http://localhost:8003/health" ;;
     *) printf '  %-13s off   (VOICE_AGENT_LANGUAGES=%s)\n' english-asr "${VOICE_AGENT_LANGUAGES}" ;;

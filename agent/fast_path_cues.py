@@ -540,6 +540,8 @@ register(
         match="substring",
         exact_below_chars=0,
         strict_dates=False,
+        # Still off (tests/test_fast_path_languages.py holds Bengali to its frozen decisions). "আপনাদের ওখানে কখন খোলা
+        # থাকবে" is answered after the model instead: main.py's _faq_topic_said, when the model cannot place it.
         faq_after_failed_avail=False,  # exactly the behaviour this had before it was data
     )
 )

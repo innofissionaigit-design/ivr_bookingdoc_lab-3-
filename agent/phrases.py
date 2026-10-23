@@ -26,6 +26,8 @@ PHRASES: dict[str, dict[str, str]] = {
         "cancel_aborted": "ঠিক আছে, আপনার অ্যাপয়েন্টমেন্টটা যেমন ছিল তেমনই আছে।",
         "no_confirmation_number": "ঠিক আছে, তাহলে বুকিংটা হয়ে যাবে, কিন্তু কোনো লিখিত কনফার্মেশন পাঠাতে পারব না।",
         "language_switched": "ঠিক আছে, এখন থেকে বাংলায় বলছি।",
+        # the call stays in the language of its first sentence (docs/adr/0003); a request to change it is answered so
+        "language_stays": "এই কলে আমি বাংলাতেই কথা বলব। বলুন, কীভাবে সাহায্য করতে পারি?",
         # KCD-461: spoken only when the turn is STILL unanswered FILLER_THRESHOLD_S (0.7 s) after the caller stopped
         # (main.py's _await_with_filler); an answer that arrives sooner is given with no filler at all.
         # OWNER'S WORDING, 2026-09-25: "আচ্ছা বলছি" ("okay, I'm telling you"), in all three languages -- pre-warmed
@@ -114,6 +116,7 @@ PHRASES: dict[str, dict[str, str]] = {
         "cancel_aborted": "ठीक है, आपकी अपॉइंटमेंट जैसी थी वैसी ही है।",
         "no_confirmation_number": "ठीक है, बुकिंग हो जाएगी, लेकिन मैं कोई लिखित कन्फ़र्मेशन नहीं भेज पाऊँगी।",
         "language_switched": "ठीक है, अब हिंदी में बात करती हूँ।",
+        "language_stays": "इस कॉल में मैं हिंदी में ही बात करूँगी। बताइए, कैसे मदद कर सकती हूँ?",
         "please_wait": "अच्छा, बताती हूँ।",
         "silence_prompt": "क्या आप कुछ और जानना चाहते हैं? नहीं तो मैं कॉल समाप्त कर दूँगी।",
         "silence_go_on": "जी, बताइए।",
@@ -178,6 +181,7 @@ PHRASES: dict[str, dict[str, str]] = {
         "cancel_aborted": "Okay, your appointment is unchanged.",
         "no_confirmation_number": "Okay, I'll go ahead with the booking, but I won't be able to send you a written confirmation.",
         "language_switched": "Okay, switching to English now.",
+        "language_stays": "I'll stay in English for this call. How can I help you?",
         "please_wait": "Alright, let me tell you.",
         "silence_prompt": "Is there anything else you would like to know? If not, I will end the call.",
         "silence_go_on": "Yes, please go ahead.",
@@ -301,22 +305,11 @@ PHRASES["en"]["reverify_notice"] = (
 )
 
 # ------------------------------------------------------------------------------------------- lay terms / prescription
-# Said whenever the caller is asked to send a prescription photo over WhatsApp so a human colleague can call back
-# (agent/lay_terms.py's HEAD category, and both blood/abdomen flows in main.py). The number is fixed and spoken
-# plainly -- digits, not a link, since this is a voice call.
-PHRASES["bn"]["send_prescription_whatsapp"] = (
-    "প্রেসক্রিপশনের একটা ছবি এই হোয়াটসঅ্যাপ নম্বরে পাঠিয়ে দিন, ৯৬৩৫৫৮৮৩০৬। আমাদের একজন সহকর্মী দেখে আপনাকে কল করবেন।"
-)
-PHRASES["hi"]["send_prescription_whatsapp"] = (
-    "पर्चे की एक फोटो इस व्हाट्सऐप नंबर पर भेज दीजिए, 9635588306। हमारा एक सहकर्मी देखकर आपको कॉल करेगा।"
-)
-PHRASES["en"]["send_prescription_whatsapp"] = (
-    "Please send a photo of the prescription to this WhatsApp number, 9635588306. A colleague will look at it "
-    "and call you back."
-)
+# The "send a photo of the prescription to this WhatsApp number" sentence that used to follow every lay-term reply was
+# removed on 2026-10-13 at the product owner's request; nothing is spoken after the lay-term answer now.
 
 # The catalogue has no head/brain imaging test today (agent/lay_terms.py's module docstring); this says so plainly
-# instead of naming a service the clinic does not offer, then hands off to send_prescription_whatsapp above.
+# instead of naming a service the clinic does not offer.
 PHRASES["bn"]["head_imaging_not_listed"] = (
     "মাথার স্ক্যান বা এমআরআই এখন আমাদের তালিকায় নেই। ডাক্তার প্রেসক্রিপশনে ঠিক কী বলেছেন সেটা দেখে বলা ভালো।"
 )
@@ -330,6 +323,12 @@ PHRASES["en"]["head_imaging_not_listed"] = (
 
 # ------------------------------------------------------------------------------------------------------- lab tests
 # A lab test is paid and booked at the counter, never over the call (main.py's book_test/add_test_booking intents).
+# Leaving the "which tests?" loop without a test: back to ordinary service. Not PHRASES["greeting"], which
+# opens with নমস্কার and would sound like the call had restarted.
+PHRASES["bn"]["how_else_help"] = "ঠিক আছে। আর কীভাবে সাহায্য করতে পারি?"
+PHRASES["hi"]["how_else_help"] = "ठीक है। और कैसे मदद कर सकती हूँ?"
+PHRASES["en"]["how_else_help"] = "All right. How else can I help you?"
+
 PHRASES["bn"]["lab_test_counter_only"] = (
     "টেস্টের বুকিং আর পেমেন্ট আমাদের কাউন্টারে গিয়ে করতে হয়, ফোনে হয় না। প্রেসক্রিপশন নিয়ে কাউন্টারে চলে আসুন।"
 )
@@ -339,6 +338,38 @@ PHRASES["hi"]["lab_test_counter_only"] = (
 PHRASES["en"]["lab_test_counter_only"] = (
     "A lab test has to be booked and paid for at the counter, not over the phone. Please come to the counter with "
     "your prescription."
+)
+
+# ---------------------------------------------------------------------------------------------------- booking lookup
+# The number and the patient's name were asked for and did not lead to a booking the agent may read out. Never says
+# which of the two did not match, and never that the number has bookings under another name.
+PHRASES["bn"]["lookup_not_matched"] = (
+    "দুঃখিত, এই নম্বর আর নাম মিলিয়ে কোনো আসন্ন বুকিং পেলাম না। কনফার্মেশন মেসেজের নম্বরটা থাকলে বলতে পারেন, "
+    "নয়তো কাউন্টারে যোগাযোগ করুন।"
+)
+PHRASES["hi"]["lookup_not_matched"] = (
+    "माफ़ कीजिए, इस नंबर और नाम से कोई आने वाली बुकिंग नहीं मिली। कन्फ़र्मेशन मैसेज वाला नंबर हो तो बता दीजिए, "
+    "नहीं तो काउंटर से संपर्क कीजिए।"
+)
+PHRASES["en"]["lookup_not_matched"] = (
+    "Sorry, I couldn't find an upcoming booking for that number and name. If you have the confirmation number from "
+    "the message, you can tell me that, or please contact the counter."
+)
+
+# ---------------------------------------------------------------------------------------------------- lab report
+# Said for "is my report ready?", "send me my report", "where do I collect my report?" (agent/report_request.py). The
+# agent has no laboratory system to read a report from, so it never says a report IS or IS NOT ready -- only who can.
+PHRASES["bn"]["report_counter_only"] = (
+    "রিপোর্টের সব কাজ আমাদের কাউন্টার দেখে। রিপোর্ট তৈরি কিনা, পাঠানো বা সংগ্রহ -- সবই কাউন্টার থেকে হয়। "
+    "দয়া করে কাউন্টারে যোগাযোগ করুন।"
+)
+PHRASES["hi"]["report_counter_only"] = (
+    "रिपोर्ट से जुड़ा सब काम हमारा काउंटर देखता है। "
+    "रिपोर्ट तैयार है या नहीं, भेजनी हो या लेनी हो, कृपया काउंटर से संपर्क कीजिए।"
+)
+PHRASES["en"]["report_counter_only"] = (
+    "Whether a report is ready, and sending or collecting it, is all handled by our counter. "
+    "Please contact the counter about your report."
 )
 
 # ---------------------------------------------------------------------------------------------------- payment link
@@ -395,6 +426,23 @@ PHRASES["en"]["unrelated_final"] = "No problem. Thank you, goodbye."
 # time at exactly the moment the system is overloaded.
 HANDOFF_ALL_LANGUAGES = ("bn", "hi", "en")
 
+
+# Silence while one of the agent's own questions is open (main.py _silence_during_question). Each leads into
+# the SAME question again, so the caller hears what they were being asked, not a new topic; the two leads differ
+# ("Caller goes silent": "each different from the last"). The closes state only what is true: an open booking
+# that was never confirmed is not booked; otherwise the conversation simply did not finish.
+PHRASES["bn"]["silence_still_there"] = "আপনি কি লাইনে আছেন?"
+PHRASES["hi"]["silence_still_there"] = "क्या आप लाइन पर हैं?"
+PHRASES["en"]["silence_still_there"] = "Are you still there?"
+PHRASES["bn"]["silence_take_your_time"] = "কোনো তাড়া নেই, ভেবে বলুন।"
+PHRASES["hi"]["silence_take_your_time"] = "कोई जल्दी नहीं, सोचकर बताइए।"
+PHRASES["en"]["silence_take_your_time"] = "There is no hurry, take your time."
+PHRASES["bn"]["silence_close_unbooked"] = "আপনার অ্যাপয়েন্টমেন্টটা এখনও বুক হয়নি। সুবিধামতো আবার ফোন করবেন। ধন্যবাদ।"
+PHRASES["hi"]["silence_close_unbooked"] = "आपका अपॉइंटमेंट अभी बुक नहीं हुआ है। सुविधा हो तो फिर फ़ोन कीजिए। धन्यवाद।"
+PHRASES["en"]["silence_close_unbooked"] = "Your appointment has not been booked yet. Please call again when it suits you. Thank you."
+PHRASES["bn"]["silence_close_unfinished"] = "আমরা কথাটা শেষ করতে পারলাম না। সুবিধামতো আবার ফোন করবেন। ধন্যবাদ।"
+PHRASES["hi"]["silence_close_unfinished"] = "हम बात पूरी नहीं कर पाए। सुविधा हो तो फिर फ़ोन कीजिए। धन्यवाद।"
+PHRASES["en"]["silence_close_unfinished"] = "We could not finish. Please call again when it suits you. Thank you."
 
 def phrase(key: str, lang: str = DEFAULT_LANGUAGE) -> str:
     table = PHRASES.get(lang) or PHRASES[DEFAULT_LANGUAGE]

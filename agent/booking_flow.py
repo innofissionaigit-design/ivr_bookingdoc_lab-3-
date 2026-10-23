@@ -76,12 +76,33 @@ class BookingState:
     offered_slots: list = field(default_factory=list)
     phone_buffer: str = ""
     name_confirmed: bool = False
+    #   doctor_verified  clinic-api has confirmed `slots["doctor_name"]` names exactly one real
+    #                    doctor. Until it has, nothing after the doctor is asked: a booking whose
+    #                    doctor turns out not to exist is three wasted questions (the live call of
+    #                    2026-10-06 asked for the day and time of "a doctor" before finding nobody).
+    #   doctor_choices   the doctors just offered when a name fitted several ("Sen" -> Sen or
+    #                    Sengupta), so the caller's "the first one" / full name can be matched.
+    doctor_verified: bool = False
+    doctor_choices: list = field(default_factory=list)
+    #   doctor_said      what the caller said that resolved to the verified doctor ("পাল"), so saying
+    #                    it again is recognised as the same doctor -- not announced as a change.
+    doctor_said: str = ""
+    #   doctor_spoken    how the Bengali / Hindi voices SAY the confirmed doctor, from clinic-api
+    #                    ({"doctor_name_bn": "সেন", ...}). Clinic data, not the caller's, so not in
+    #                    `slots`; merged in only where the read-back is built (readback_slots).
+    doctor_spoken: dict = field(default_factory=dict)
 
     def touch(self) -> None:
         self.last_updated = time.monotonic()
 
     def is_stale(self) -> bool:
         return (time.monotonic() - self.last_updated) > STATE_IDLE_TIMEOUT_S
+
+    def readback_slots(self) -> dict:
+        """The slots as the read-back needs them: the caller's, plus how to SAY the doctor. The Latin
+        catalogue name is unspeakable on the Bengali and Hindi voices, so a read-back built from
+        `slots` alone was blocked by agent/tts.py at the one step a booking cannot finish without."""
+        return {**self.slots, **self.doctor_spoken}
 
     def note_retry(self, field_name: str) -> int:
         self.retry_counts[field_name] = self.retry_counts.get(field_name, 0) + 1
@@ -132,6 +153,11 @@ def merge_slots(state: BookingState, new_slots: dict) -> list[str]:
                 state.test_names.append(t)
                 changed.append("test_names")
     state.touch()
+    if "doctor_name" in changed:
+        # A different doctor has not been checked yet, whatever the last one was -- and the last one's
+        # spoken name must not be read back with the new one.
+        state.doctor_verified = False
+        state.doctor_spoken = {}
     if changed and state.stage in ("confirming", "awaiting_charge_confirm"):
         # A correction after the readback re-opens collection rather than
         # silently committing the old value or throwing away everything
@@ -263,10 +289,33 @@ def pick_offered_slot(text: str, offered: list[dict]) -> dict | None:
     for index in range(min(len(offered), 3)):
         if any(w in said for w in _ORDINAL_INDIC[index]) or _ORDINAL_LATIN[index].search(said):
             return offered[index]
-    # A bare yes takes the first -- it is the one the sentence led with.
-    if classify_yes_no(said, "bn") == "yes" or classify_yes_no(said, "en") == "yes":
+    # A bare yes takes the first -- it is the one the sentence led with. In every language the
+    # agent speaks: Hindi was missing, so a Hindi caller's "हाँ" to "that day?" was never taken and
+    # they were asked "which day?" on every turn after it (replayed 2026-10-07, all three languages).
+    if any(classify_yes_no(said, lang) == "yes" for lang in ("bn", "hi", "en")):
+        return offered[0]
+    # "That day" / "this day" points back at the day just offered -- it names no day of its own. Live 2026-10-07:
+    # "ঐদিনেই করুন সকাল সাড়ে দশটায়" after "his next sitting is Thursday" was filed with TODAY's date by the model, and
+    # the caller was told "he doesn't sit that day" twice over. The এ/এই ("this") forms are here for the same reason:
+    # "এদিনই করে দিন" (live 2026-10-08) is the same answer in the other demonstrative, and was not recognised.
+    # A "no" in the same sentence ("not that day") is never a pick.
+    if (
+        _RE_THAT_DAY.search(said)
+        and not _RE_NOT_THAT_DAY.search(said)
+        and not any(classify_yes_no(said, lang) == "no" for lang in ("bn", "hi", "en"))
+    ):
         return offered[0]
     return None
+
+
+_RE_THAT_DAY = re.compile(
+    r"(?:ওই|ঐ|সেই|সে|এই|এ)\s*দিন|(?:उसी|उस|वही|वो|वह|इसी|इस)\s*दिन"
+    r"|\b(?:that|this|the\s+same|same)\s+(?:day|date)\b",
+    re.IGNORECASE,
+)
+_RE_NOT_THAT_DAY = re.compile(
+    r"\b(?:not|never)\s+(?:on\s+)?(?:that|this|the\s+same|same)\s+(?:day|date)\b", re.IGNORECASE
+)
 
 
 # story: "Caller cannot give a contact number"
@@ -330,6 +379,16 @@ _YES_WORDS = {
 # this exact call path. A caller who says a bare "cancel" with no other
 # word now gets None (asked again) rather than a guessed answer, which
 # is the safe direction to be wrong in.
+_GO_AHEAD_TOKENS = {
+    "bn": frozenset({"আচ্ছা", "হ্যাঁ", "হ্যা", "ঠিক", "আছে", "ওকে", "দিন", "দাও", "করে", "করুন", "দিয়ে", "প্লিজ",
+                     "বেশ", "তাই", "হোক", "অবশ্যই", "নিশ্চয়ই", "নিশ্চয়ই"}),
+    "hi": frozenset({"अच्छा", "हाँ", "हां", "जी", "ठीक", "है", "ओके", "कर", "दीजिए", "दीजिये", "दो", "दें", "प्लीज़", "प्लीज",
+                     "बिल्कुल", "ज़रूर", "जरूर", "चलिए", "हाँजी"}),
+    "en": frozenset({"go", "ahead", "do", "it", "please", "yes", "yeah", "ok", "okay", "sure", "fine", "alright",
+                     "right", "that's", "thats", "great"}),
+}
+# Words that carry no go-ahead on their own ("it", "please"): never a yes by themselves.
+_GO_AHEAD_FILLER = frozenset({"it", "please", "that's", "thats", "প্লিজ", "আছে", "है", "प्लीज़", "प्लीज"})
 _NO_WORDS = {
     "bn": ("না", "নয়", "ঠিক না"),
     "hi": ("नहीं", "नही", "गलत"),
@@ -407,7 +466,26 @@ def _expresses_uncertainty(tokens: list[str]) -> bool:
     return False
 
 
+_YES_NO_LANGUAGE_OF_SCRIPT = {"bengali": "bn", "devanagari": "hi", "latin": "en"}
+
+
 def classify_yes_no(transcript: str, lang: str) -> str | None:
+    """A yes or a no, read first in `lang` and, when that finds nothing and the answer is written in another script,
+    in that script's language. The call's language is fixed by its first sentence (main._resolve_reply_language),
+    so `lang` is the language the agent SPEAKS; a caller who answers "yes" in English to a Bengali question is
+    still answering it."""
+    answer = _classify_yes_no_in(transcript, lang)
+    if answer is not None:
+        return answer
+    from agent.language_policy import dominant_script  # a leaf module; imported late only to keep this one standalone
+
+    other = _YES_NO_LANGUAGE_OF_SCRIPT.get(dominant_script(transcript) or "")
+    if other and other != lang:
+        return _classify_yes_no_in(transcript, other)
+    return None
+
+
+def _classify_yes_no_in(transcript: str, lang: str) -> str | None:
     """Deterministic, no LLM call -- confirming or cancelling a booking is
     exactly the kind of binary, high-stakes decision this project keeps
     out of the model's hands (CLAUDE.md's truth boundary) and off the
@@ -434,6 +512,13 @@ def classify_yes_no(transcript: str, lang: str) -> str | None:
     # "confirm" would commit a write on an explicitly uncertain answer.
     if lang == "en" and _expresses_uncertainty(tokens):
         return None
+
+    # "আচ্ছা দিন", "कर दीजिए", "go ahead": an answer made ONLY of go-ahead words is a yes. Live 2026-10-07: "আচ্ছা
+    # দিন" to "shall I cancel it?" was not one, went to the model as smalltalk, and the caller was asked how they
+    # were. Whole-answer only: "করে দিন" inside "অন্য দিনে করে দিন" ("do it on another day") is not a yes.
+    go_ahead = _GO_AHEAD_TOKENS.get(lang, _GO_AHEAD_TOKENS["en"])
+    if tokens and all(tok in go_ahead for tok in tokens) and any(tok not in _GO_AHEAD_FILLER for tok in tokens):
+        return "yes"
 
     negated_other = False
     for w in yes_words:

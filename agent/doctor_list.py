@@ -44,6 +44,7 @@ should review the Bengali and Hindi.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 
 # A plural/interrogative ask for doctors, with NO specific doctor named. Each
@@ -159,11 +160,129 @@ def _normalise(text: str) -> str:
     return unicodedata.normalize("NFC", text or "").lower()
 
 
+# ---- the same question by its STRUCTURE, not its exact words ----------------------------------------------------
+#
+# The phrase lists above missed the two questions of a live call on 2026-10-07, both plainly "which doctors / which
+# departments do you have":
+#
+#     আপনাদের ওখানে কোন কোন ডক্টর বসেন            ("ডক্টর", the English loanword; the list had only "ডাক্তার")
+#     কোন কোন ডিপার্টমেন্ট আছে আপনাদের ওখানে       ("ডিপার্টমেন্ট"; the list had only "বিভাগ")
+#
+# Callers here say doctor and department in three scripts plus English loanwords, with case endings, in any word order.
+# Enumerating every combination is the arms race the phrase list was losing. So the question is also recognised by its
+# shape: a LIST-ASKING word near a DOCTOR or DEPARTMENT word.
+#
+#   list-asking  a reduplicated question word (কোন কোন, কে কে, কী কী, कौन कौन, kon kon) -- the Bengali/Hindi plural ask;
+#                "how many" (কয়টা, কতগুলো, कितने); list (তালিকা, লিস্ট, सूची); "all" (সব, সমস্ত, सभी) but only RIGHT
+#                beside the subject, because "সব ঠিক আছে" ("all fine") is an ordinary turn.
+#   subject      the doctor or department word in any script, matched by its stem so "ডাক্তারদের", "ডিপার্টমেন্টের",
+#                "विभागों" count.
+#
+# A single question word ("কোন ডাক্তার দেখাব" -- "which doctor should I see") is NOT a list request: that caller wants
+# to be helped to choose, which the booking flow does. One exception, for departments only: a single question word plus
+# "is there / are there" ("আপনাদের কোন ডিপার্টমেন্ট আছে?") -- unless the department word is locative ("কোন বিভাগে আছেন",
+# "in which department is he"), which asks something else.
+_DOCTOR_STEMS = (
+    "ডাক্তার",
+    "ডক্টর",
+    "ডাঃ",
+    "স্পেশালিস্ট",
+    "বিশেষজ্ঞ",
+    "डॉक्टर",
+    "डाक्टर",
+    "स्पेशलिस्ट",
+    "विशेषज्ञ",
+    "doctor",
+    "daktar",
+    "specialist",
+)
+_DEPARTMENT_STEMS = (
+    "বিভাগ",
+    "ডিপার্টমেন্ট",
+    "ডিপার্টমেণ্ট",
+    "ডিপার্টমেন",
+    "विभाग",
+    "डिपार्टमेंट",
+    "डिपार्टमेन्ट",
+    "department",
+    "dept",
+    "bibhag",
+    "vibhag",
+)
+_QUESTION_WORDS = frozenset(
+    {"কোন", "কে", "কি", "কী", "কারা", "কোনটা", "कौन", "क्या", "kon", "ke", "ki", "kara", "kaun", "kya", "which", "what"}
+)
+_HOW_MANY = frozenset({"কয়টা", "কটা", "কতগুলো", "কতগুলি", "কতজন", "কয়জন", "कितने", "कितनी", "kitne", "koyta", "many"})
+_LIST_WORDS = frozenset({"তালিকা", "লিস্ট", "list", "सूची", "लिस्ट"})
+_ALL_WORDS = frozenset({"সব", "সমস্ত", "সকল", "সবাই", "all", "सभी", "सब", "सारे", "sab", "sare", "saare"})
+_EXISTS = frozenset(
+    {"আছে", "আছেন", "রয়েছে", "রয়েছেন", "हैं", "है", "have", "has", "are", "there", "available", "ache", "achhe"}
+)
+_LOCATIVE_ENDINGS = ("ে", "এ", "मे", "में")
+_WORD_SPLIT = re.compile(r"[\s,.!?।॥;:'\"()\-–—/]+")
+_NEAR = 2  # list-asking word to subject, in words
+
+
+def _words(text: str) -> list[str]:
+    return [w for w in _WORD_SPLIT.split(_normalise(text)) if w]
+
+
+def _stem_hit(word: str, stems: tuple[str, ...]) -> bool:
+    return any(word.startswith(s) for s in stems)
+
+
+def _asks_by_structure(words: list[str]) -> bool:
+    subjects = [i for i, w in enumerate(words) if _stem_hit(w, _DOCTOR_STEMS) or _stem_hit(w, _DEPARTMENT_STEMS)]
+    if not subjects:
+        return False
+
+    def near(i: int, reach: int = _NEAR) -> bool:
+        return any(abs(i - s) <= reach for s in subjects)
+
+    for i, w in enumerate(words):
+        # The reduplicated question must GOVERN the doctor/department word: it comes first, and close.
+        # "কোন কোন দিন বসেন ডাক্তার দাস" is "on which days does Dr Das sit" -- the plural "which" is about days.
+        if w in _QUESTION_WORDS and i + 1 < len(words) and words[i + 1] == w:
+            if any(i + 1 < s <= i + 1 + _NEAR for s in subjects):
+                return True  # কোন কোন ডক্টর, কোন কোন ডিপার্টমেন্ট এর ডক্টর, कौन कौन से डॉक्टर, kon kon department
+        if (w in _HOW_MANY or w in _LIST_WORDS) and near(i):
+            return True
+        if w in _ALL_WORDS and near(i, 1):
+            return True
+    departments = [i for i, w in enumerate(words) if _stem_hit(w, _DEPARTMENT_STEMS)]
+    for d in departments:
+        if words[d].endswith(_LOCATIVE_ENDINGS):
+            continue
+        asked = any(words[j] in _QUESTION_WORDS for j in range(max(0, d - 3), d))
+        if asked and any(w in _EXISTS for w in words):
+            return True  # আপনাদের কোন ডিপার্টমেন্ট আছে
+        if _asks_far_in_english(words, d):
+            return True  # which outdoor or open department do you have
+    return False
+
+
+# English only, and only in one exact shape. Live 2026-10-09: "which outdoor or open department do you have" has the
+# question word FOUR words before "department" (qualifiers pile up in English: "which special outpatient department"),
+# one past the 3-word reach above, so the ask was not recognised, went to the model, and the model filed the whole
+# sentence as a symptom -- "Sorry, I couldn't quite tell which department this needs". The reach is NOT widened for
+# every sentence: "what time is the orthopaedics department available" has the same distance and the word "available"
+# and is a different question. Beyond 3 words only the tail "... department do you have" counts.
+_FAR_QUESTION_WORDS = frozenset({"which", "what"})
+_FAR_REACH = 5
+
+
+def _asks_far_in_english(words: list[str], d: int) -> bool:
+    if not any(words[j] in _FAR_QUESTION_WORDS for j in range(max(0, d - _FAR_REACH), d - 3)):
+        return False
+    return "you" in words[d + 1 : d + 3] and any(w in ("have", "has") for w in words[d + 2 : d + 4])
+
+
 def detect_doctor_list_request(text: str) -> tuple[bool, str | None]:
-    """True, plus which phrase family matched, when the caller is asking which
+    """True, plus how it was recognised, when the caller is asking which
     doctors (or departments) the clinic has, without naming a doctor.
 
-    The tag is for logging only, never the reply language.
+    The tag is for logging only, never the reply language: a phrase family
+    ("en", "latin", "bn", "hi") or "structure" for the shape-based rule above.
     """
     if not text or not text.strip():
         return False, None
@@ -172,6 +291,8 @@ def detect_doctor_list_request(text: str) -> tuple[bool, str | None]:
     for tag, phrases in _FAMILIES:
         if any((p in lowered) if p.isascii() else (p in raw) for p in phrases):
             return True, tag
+    if _asks_by_structure(_words(text)):
+        return True, "structure"
     return False, None
 
 

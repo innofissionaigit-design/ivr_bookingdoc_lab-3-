@@ -23,6 +23,7 @@ from typing import Protocol
 
 from agent.lid import DEFAULT_CONFIDENCE_FLOOR, SUPPORTED_LANGUAGES, LIDResult
 from agent.speech_norm import unspeakable_spans
+from agent.spoken_digits import only_a_number
 
 _SCRIPT_RANGE = {"bn": ("ঀ", "৿"), "hi": ("ऀ", "ॿ")}
 _WRONG_SCRIPT = {"bn": ("ऀ", "ॿ"), "hi": ("ঀ", "৿")}
@@ -88,14 +89,21 @@ def languages_to_verify(language: str, scores: dict[str, float], active: tuple[s
 OTHER_INDIC_MIN_LID = 0.30
 
 
-def engines_needed(language: str, scores: dict[str, float], active: tuple[str, ...]) -> list[str]:
+def engines_needed(
+    language: str, scores: dict[str, float], active: tuple[str, ...], prior: str | None = None
+) -> list[str]:
     """The recognisers that can still change the answer, best language-ID score first (ties keep that order, so the
     LID-preferred language wins them). Measured on the pod: running all three took ~0.64 s; English took 0.21 s.
 
       * unknown language, or no scores: all of them, as before;
       * otherwise language ID's favourite, plus the OTHER Indic language only if LID is torn (>= OTHER_INDIC_MIN_LID);
       * English ALWAYS: it is cheap and concurrent, and language ID mislabels accented English as Bengali or Hindi
-        (measured: English speech came back as bn 0.83 / hi 0.16 / en 0.01), so its probability cannot rule it out."""
+        (measured: English speech came back as bn 0.83 / hi 0.16 / en 0.01), so its probability cannot rule it out;
+      * the call's own language (`prior`) ALWAYS. pick_candidate can only refuse a switch on the say-so of one recogniser
+        if it has the call language's own transcript to stay with. Live call 2026-10-07: a Bengali caller said a doctor's
+        name, language ID gave hi 0.80 / bn 0.20, Bengali fell under OTHER_INDIC_MIN_LID and was not run, so there was
+        nothing to stay with and the call went to Hindi. The orchestrator starts this recogniser before language ID
+        returns anyway (main_pcm._route_and_transcribe), so including it costs nothing; leaving it out threw it away."""
     ranked = [lang for lang, _ in sorted(scores.items(), key=lambda kv: kv[1], reverse=True) if lang in active]
     for lang in active:
         if lang not in ranked:
@@ -108,6 +116,8 @@ def engines_needed(language: str, scores: dict[str, float], active: tuple[str, .
             need.append(lang)
     if language in active and language not in need:
         need.insert(0, language)
+    if prior in active and prior not in need:
+        need.append(prior)
     return need
 
 
@@ -158,8 +168,16 @@ def english_word_share(text: str) -> float:
     return sum(t in _ENGLISH_WORDS for t in tokens) / len(tokens)
 
 
-# Leaving the language the call has been in needs language ID to believe the new one, not merely allow it.
-SWITCH_MIN_LID = 0.50
+# Leaving the language the call has been in needs language ID to be DECISIVE about the new one -- the same evidence
+# that lets it commit to a language on its own (no second language carrying SECOND_LANGUAGE_FLOOR), not merely a lean.
+#
+# It was 0.50 ("believes it"), and a live call on 2026-10-07 showed what that costs. A Bengali caller answered "which
+# doctor?" with only a name, "ডক্টর দেবাশিস দাস". A name sounds the same in either language, and language ID scored it
+# hi 0.80 / bn 0.20 -- logged by this very system as "not decisive" -- and the call switched to Hindi on it, disclosure
+# notice and all. Every genuine-language turn on that pod scored 1.00. So 0.80 is not evidence of a new language; it is
+# what an utterance with no language in it looks like. A caller who really changes language is still followed: a
+# decisive turn moves the call (the router commits it before this is ever consulted), and so does an explicit request.
+SWITCH_MIN_LID = 1.0 - SECOND_LANGUAGE_FLOOR
 
 # A recogniser whose two decoders agree at least this much is convincing. Same measurement as ENGLISH_MIN_AGREEMENT:
 # a decoder pair trained on the speech's own language agrees 0.67-1.00, the wrong one 0.00-0.67. REASONED from a small
@@ -191,6 +209,60 @@ class _Recognition(Protocol):
     decoder_agreement: float
 
 
+# ---- what the transcripts themselves say about the language ---------------------------------------------------------
+#
+# Language ID is not enough to leave the call's language between Bengali and Hindi, even when it is "decisive". Live,
+# 2026-10-07, synthetic Bengali callers (this stack's own Bengali voice):
+#     "ভিটামিন সি টেস্টের দাম কত?"           LID hi 0.97 -> committed Hindi
+#     "আমি একটা সিবিসি টেস্ট বুক করতে চাই"   LID hi 0.99 on the first words
+# Loanwords (vitamin, CBC, test, book, doctor, appointment) carry most of these sentences and sound the same in both
+# languages. The GRAMMAR does not: the Bengali recogniser wrote "টেস্টের দাম কত" (the -এর ending, "কত"), the Hindi one
+# wrote "टेस्टिड दांग" -- no है, no का, no कितना. A recogniser trained on a language writes that language's function
+# words when it hears them, and cannot invent them from the other language's speech.
+#
+# So leaving the call's language for the other Indic one also needs the new language's transcript to carry MORE of its
+# own grammar words than the call language's transcript carries of its own. A bare name or a lone loanword has none in
+# either, and the call stays where it is -- the case this was built for. A genuine Hindi sentence ("सीबीसी टेस्ट का रेट
+# कितना है") carries several, and its Bengali transcript none, so the call follows the caller.
+_GRAMMAR_WORDS = {
+    "bn": frozenset(
+        """আমি আমার আমাকে আমরা আমাদের আপনি আপনার আপনাকে আপনাদের তুমি তোমার ওনার উনি তিনি এটা ওটা সেটা একটা
+        ওই সেই কত কেন কোথায় কবে কখন কোনো কারা কিভাবে কীভাবে করতে করব করবো করছি করেছি করুন করা
+        চাই চাইছি হবে হয়েছে আছে আছেন নেই হ্যাঁ বলুন বলবেন বলছি বলছেন যাবে যাব পাব পারব পারি দেবেন দেখাব
+        দেখাবো দেখাতে লাগবে দরকার এবং তাহলে থেকে জন্য সাথে সঙ্গে কাছে মধ্যে কিন্তু ভালো""".split()
+    ),
+    "hi": frozenset(
+        """है हैं था थी थे हूँ हूं का में पर ने मैं मुझे मेरा मेरी मेरे हम हमें हमारा आप आपका आपकी आपके
+        आपको तुम वह वे यह उसका उनका उनकी क्या कितना कितने कितनी कहाँ कहां क्यों कैसे कौन कौनसा कौन-सा
+        चाहिए चाहता चाहती करना करनी करने करो कीजिए दीजिए बताइए बताओ बताएँ दिखाना दिखाने मिलेगा मिलेगी होगा होगी
+        नहीं हाँ हां और भी लेकिन लिए साथ पास वाला वाली""".split()
+    ),
+}
+# Deliberately LEFT OUT of both lists: short words that sound alike across the two languages, because a recogniser can
+# write the other language's speech as its own word -- Hindi के/से/की/तो/ना/कि heard by the Bengali recogniser come out
+# as কে/সে/কি/তো/না, all Bengali words; Bengali কি/কে/তো/সে heard by the Hindi one come out as की/के/तो/से. Also দিন
+# (= दिन, "day") and করে/करे. A word either recogniser could write for EITHER language's speech proves nothing.
+_BENGALI_ENDINGS = ("ের", "টা", "টি", "গুলো", "দের", "য়ের")  # "টেস্টের", "সিবিসিটা": grammar glued to a loanword
+
+
+def grammar_words(text: str, lang: str) -> int:
+    """How many of `lang`'s own grammar words (and, for Bengali, case endings on a word) `text` contains."""
+    words = [w.strip(".,?!।॥'\"") for w in (text or "").split()]
+    known = _GRAMMAR_WORDS.get(lang, frozenset())
+    n = sum(w in known for w in words if w)
+    if lang == "bn":
+        n += sum(1 for w in words if w and w not in known and len(w) > 3 and w.endswith(_BENGALI_ENDINGS))
+    return n
+
+
+def transcript_supports_switch(new_lang: str, new_text: str, stay_lang: str, stay_text: str) -> bool:
+    """Do the transcripts back leaving `stay_lang` for `new_lang`? Only judged between Bengali and Hindi (English has its
+    own gate in pick_candidate); any other pair is left to language ID, as before."""
+    if new_lang == stay_lang or new_lang not in _GRAMMAR_WORDS or stay_lang not in _GRAMMAR_WORDS:
+        return True
+    return grammar_words(new_text, new_lang) > grammar_words(stay_text, stay_lang)
+
+
 def pick_candidate(
     candidates: list[tuple[str, _Recognition]], lid_scores: dict[str, float] | None = None, prior: str | None = None
 ):
@@ -207,7 +279,12 @@ def pick_candidate(
     usable = [(lang, r) for lang, r in candidates if getattr(r, "text", "").strip()]
     if not usable:
         return candidates[0]
+    # A number read out in English digit names ("zero one two ...") by a Bengali or Hindi caller is still their call:
+    # live 2026-10-07, "giro won two three ..." mid-cancellation switched the call to English, disclosure and all.
+    number_in_english = prior not in (None, "en") and any(lang == prior for lang, _ in usable)
     for lang, r in usable:
+        if lang == "en" and number_in_english and only_a_number(r.text):
+            continue
         if lang == "en" and r.decoder_agreement >= ENGLISH_MIN_AGREEMENT and script_share(r.text, "en") >= 0.9:
             # With language ID scores in hand, "English" must also be English (see ENGLISH_MIN_WORD_SHARE).
             if (
@@ -217,6 +294,10 @@ def pick_candidate(
             ):
                 return lang, r
     rest = [(lang, r) for lang, r in usable if lang != "en"] or usable
+    # The call language's own transcript, kept aside BEFORE the filter below. That filter stops an engine language ID does
+    # not believe from WINNING; it must not also stop the call from STAYING. Live: LID hi 0.97 / bn 0.03 on Bengali
+    # loanwords dropped the Bengali transcript here, and with it the only evidence that the caller never left Bengali.
+    staying = [(lang, r) for lang, r in rest if lang == prior] if prior else []
     if lid_scores:
         believed = [(lang, r) for lang, r in rest if lid_scores.get(lang, 0.0) >= INDIC_MIN_LID]
         rest = believed or rest
@@ -224,8 +305,11 @@ def pick_candidate(
     if lid_scores and not prior:
         # First turn: no call language yet, so language ID's own favourite among these is the one to stay with.
         prior = max((lang for lang, _ in rest), key=lambda lang: lid_scores.get(lang, 0.0))
-    if lid_scores and prior and best[0] != prior and lid_scores.get(best[0], 0.0) < SWITCH_MIN_LID:
-        stay = [(lang, r) for lang, r in rest if lang == prior]
-        if stay:
-            return stay[0]  # no switch on a recogniser's say-so alone
+    if lid_scores and prior and best[0] != prior:
+        stay = [(lang, r) for lang, r in rest if lang == prior] or staying
+        if stay and (
+            lid_scores.get(best[0], 0.0) < SWITCH_MIN_LID  # no switch on a recogniser's say-so alone
+            or not transcript_supports_switch(best[0], best[1].text, prior, stay[0][1].text)  # nor on loanwords
+        ):
+            return stay[0]
     return best

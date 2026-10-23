@@ -45,6 +45,54 @@ def resolve_reply_language(identified: str | None, explicit_request: str | None 
     return "bn"
 
 
+# Words that carry no language of their own: a greeting, a yes or a no. A caller who opens with "hello" and then speaks
+# Bengali has not told us the call is English; one who opens with "হ্যাঁ" has told us nothing either.
+_NO_EVIDENCE = frozenset({
+    "hello", "hallo", "helo", "hi", "hey", "yes", "yeah", "yep", "no", "nope", "ok", "okay", "hmm", "hm", "ha", "haan",
+    "haa", "hae", "ji", "namaste", "namaskar", "good", "morning", "afternoon", "evening", "please",
+    "হ্যালো", "হ্যাঁ", "হ্যা", "হুম", "না", "নয়", "ওকে", "জি", "নমস্কার", "নমষ্কার", "আচ্ছা", "ঠিক", "আছে", "প্লিজ",
+    "হ্যালো", "হেলো",
+    "हैलो", "हेलो", "हलो", "हाँ", "हां", "हाँजी", "नहीं", "नही", "ओके", "जी", "नमस्ते", "नमस्कार", "अच्छा", "ठीक", "है",
+    "प्लीज", "हम्म",
+})
+_WORD_EDGE = ".,!?।;:\"'()[]-–—…"
+
+
+def establishes_call_language(text: str | None) -> bool:
+    """Is this turn a real sentence -- one that says which language the call is in?
+
+    The call's language is fixed by the caller's FIRST such turn (main._resolve_reply_language): "hello", "হ্যাঁ",
+    "नमस्ते" and a lone word do not count, because they are the same sound in every language and the recogniser's
+    label for them is a guess. Two or more words that are not greetings / yes / no do.
+
+    REASONED, not measured: two is the smallest count that keeps a one-word opening ("appointment", "ডাক্তার") from
+    deciding the call."""
+    words = []
+    for raw in unicodedata.normalize("NFC", text or "").lower().split():
+        w = raw.strip(_WORD_EDGE)
+        if w and sum(script_counts(w).values()) and w not in _NO_EVIDENCE:
+            words.append(w)
+    return len(words) >= 2
+
+
+_LANGUAGE_FOR_SCRIPT = {"bengali": "bn", "devanagari": "hi", "latin": "en"}
+
+
+def foreign_script_language(text: str, lang: str) -> str | None:
+    """The language `text` is written in, when that is NOT `lang`'s script -- else None.
+
+    The call's language is fixed by its first sentence (docs/adr/0003), so `lang` is the language the agent SPEAKS;
+    a later turn may be said in another one. Keyword tables, test-name grounding and the fast path are keyed by
+    language, so such a turn is read once more in its own. None when the text has any letter of `lang`'s own script
+    (a Bengali sentence with an English word in it is a Bengali sentence) or no letters at all."""
+    own = SCRIPT_FOR_LANGUAGE.get(lang)
+    counts = script_counts(text)
+    if own is None or counts.get(own, 0):
+        return None
+    best = max(counts, key=lambda s: counts[s])
+    return _LANGUAGE_FOR_SCRIPT.get(best) if counts[best] else None
+
+
 def script_counts(text: str) -> dict[str, int]:
     text = unicodedata.normalize("NFC", text or "")
     # LETTERS only: the Bengali and Devanagari blocks also hold their own

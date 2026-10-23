@@ -258,7 +258,15 @@ def backfill_doctor_fees() -> int:
     db = SessionLocal()
     filled = 0
     try:
-        depts = {d.id: d.name for d in db.query(Department).all()}
+        # id and name only, never the whole entity: a full query(Department)
+        # selects every mapped column, and Department gained name_bn/name_hi
+        # (the spoken forms, without which a reply naming a department is
+        # blocked on the Bengali and Hindi voices). A migration can run before
+        # seed.add_i18n_columns() has added them -- the real app orders it
+        # correctly (clinic-api/main.py) but a migration called on its own does
+        # not -- and a full select then fails with "no such column" on exactly
+        # the old databases these functions exist to upgrade.
+        depts = dict(db.query(Department.id, Department.name).all())
         for doc in db.query(Doctor).filter(Doctor.consultation_fee_inr == 500).all():
             fee = DEPARTMENT_FEE_INR.get(depts.get(doc.department_id))
             if fee and fee != 500:
@@ -342,14 +350,24 @@ def seed_department_routes() -> int:
     added = 0
     try:
         existing = {r.department_id for r in db.query(DepartmentRoute).all()}
-        by_name = {d.name: d for d in db.query(Department).all()}
+        # Two COLUMNS, not the whole entity: a full `query(Department)` selects
+        # every mapped column, so the moment Department gained name_bn/name_hi
+        # (models.Department -- the spoken forms, without which every reply that
+        # names a department is blocked on the Bengali and Hindi voices) these
+        # migrations began failing with "no such column" on exactly the old
+        # databases they exist to upgrade, because they can run BEFORE
+        # seed.add_i18n_columns() has added the columns. Both need only the id
+        # and the name, so selecting just those removes the ordering dependency
+        # rather than adding another one -- the same trap
+        # seed.add_i18n_columns()'s own docstring describes.
+        by_name = {name: dept_id for dept_id, name in db.query(Department.id, Department.name).all()}
         for dept_name, kw_bn, kw_hi, kw_en in DEPARTMENT_ROUTE_KEYWORDS:
-            dept = by_name.get(dept_name)
-            if not dept or dept.id in existing:
+            dept_id = by_name.get(dept_name)
+            if dept_id is None or dept_id in existing:
                 continue
             db.add(
                 DepartmentRoute(
-                    department_id=dept.id,
+                    department_id=dept_id,
                     keywords_bn="|".join(kw_bn),
                     keywords_hi="|".join(kw_hi),
                     keywords_en="|".join(kw_en),
@@ -372,11 +390,21 @@ def backfill_department_route_keywords() -> int:
     db = SessionLocal()
     updated = 0
     try:
-        by_name = {d.name: d for d in db.query(Department).all()}
+        # Two COLUMNS, not the whole entity: a full `query(Department)` selects
+        # every mapped column, so the moment Department gained name_bn/name_hi
+        # (models.Department -- the spoken forms, without which every reply that
+        # names a department is blocked on the Bengali and Hindi voices) these
+        # migrations began failing with "no such column" on exactly the old
+        # databases they exist to upgrade, because they can run BEFORE
+        # seed.add_i18n_columns() has added the columns. Both need only the id
+        # and the name, so selecting just those removes the ordering dependency
+        # rather than adding another one -- the same trap
+        # seed.add_i18n_columns()'s own docstring describes.
+        by_name = {name: dept_id for dept_id, name in db.query(Department.id, Department.name).all()}
         rows = {r.department_id: r for r in db.query(DepartmentRoute).all()}
         for dept_name, kw_bn, kw_hi, kw_en in DEPARTMENT_ROUTE_KEYWORDS:
-            dept = by_name.get(dept_name)
-            row = rows.get(dept.id) if dept else None
+            dept_id = by_name.get(dept_name)
+            row = rows.get(dept_id) if dept_id is not None else None
             if row is None:
                 continue
             changed = False
@@ -473,6 +501,36 @@ def backfill_doctor_full_names() -> int:
         db.close()
 
 
+def backfill_faq_keywords() -> int:
+    """Adds any FAQ keyword phrase from the seed (Bengali: seed.FAQ_ENTRIES; Hindi, English:
+    i18n_content.FAQ_KEYWORDS_I18N) that an EXISTING FAQ row does not already have -- additive only, appended after
+    what is there, never removing or reordering it, the same discipline as backfill_department_route_keywords(). Without
+    it a keyword added to the seed reaches only a brand-new database: seed.backfill_i18n() fills a keyword column only
+    while it is EMPTY, so "কখন খোলা" (live 2026-10-07) would never have reached the pod's clinic.db."""
+    from i18n_content import FAQ_KEYWORDS_I18N
+    from models import FAQ
+    from seed import FAQ_ENTRIES
+
+    bn_by_topic = {topic: kws for topic, kws, _answer in FAQ_ENTRIES}
+    db = SessionLocal()
+    updated = 0
+    try:
+        for row in db.query(FAQ).all():
+            kw_hi, kw_en = FAQ_KEYWORDS_I18N.get(row.topic, ([], []))
+            changed = False
+            for attr, new_kws in (("keywords_bn", bn_by_topic.get(row.topic, [])), ("keywords_hi", kw_hi), ("keywords_en", kw_en)):
+                have = [w for w in (getattr(row, attr) or "").split("|") if w]
+                missing = [w for w in new_kws if w not in have]
+                if missing:
+                    setattr(row, attr, "|".join(have + missing))
+                    changed = True
+            updated += changed
+        db.commit()
+    finally:
+        db.close()
+    return updated
+
+
 def finish_booking_schema_setup() -> dict:
     """The half that needs `departments`/`doctors` to already have rows --
     call this AFTER seed() or backfill_i18n() has run, not before."""
@@ -486,4 +544,5 @@ def finish_booking_schema_setup() -> dict:
         "doctor_fees_filled": fees_filled,
         "cancellation_policy_seeded": policy_seeded,
         "doctor_full_names_filled": backfill_doctor_full_names(),
+        "faq_keywords_backfilled": backfill_faq_keywords(),
     }

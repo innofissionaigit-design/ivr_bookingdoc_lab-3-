@@ -296,7 +296,16 @@ _RE_DATE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b(\s*তারিখে?)?")
 _RE_TIME_RANGE = re.compile(r"\b(\d{1,2}):(\d{2})\s*[-–—to]{1,2}\s*(\d{1,2}):(\d{2})\b")
 _RE_TIME = re.compile(r"\b(\d{1,2}):(\d{2})\b")
 _RE_PHONE = re.compile(r"\b(\d{10,})\b")
-_RE_CONF_ID = re.compile(r"\b([A-Z]{2,}[-]?\d{3,})\b")
+# The WHOLE booking reference, hex suffix included: clinic-api issues KCD-YYYYMMDD-XXXXXXXX
+# (booking_service._confirmation_id, eight hex digits). The previous pattern stopped at the date
+# group, so the suffix fell through to the generic number sweep: "48B06CDE" was read as
+# "forty-eight, B, six, CDE" with the letters left in Latin, and on the Bengali voice those Latin
+# letters are unspeakable, so agent/tts.py blocked the whole confirmation sentence. Measured on
+# 2026-10-07 over 402 generated references: 231 blocked in Bengali, 1 in Hindi -- a caller who had
+# just finished a booking had a better-than-even chance of hearing "system busy" instead of their
+# number. Same fix as the sibling tree's agent/bn_normalize.py (its merge report, "confirmation-id
+# speakability"). figures.id_groups already splits on every hyphen and spells each group.
+_RE_CONF_ID = re.compile(r"\b([A-Z]{2,}-?\d{3,}(?:-[0-9A-Z]{2,})*)\b")
 _RE_DECIMAL = re.compile(r"\b(\d+)\.(\d+)\b")
 _RE_INT = re.compile(r"\d+")
 

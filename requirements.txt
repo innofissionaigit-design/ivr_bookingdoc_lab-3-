@@ -14,3 +14,9 @@ uvicorn[standard]
 torch==2.1.0
 torchaudio==2.1.0
 soundfile==0.12.1
+
+# telephony/ only (python -m telephony): the Twilio Media Streams adapter and the
+# connector's /ws/audio client. >=13 because providers/telephony/twilio.py uses the
+# websockets.asyncio.server API, which the pre-13 releases do not have. The AI
+# pipeline (agent/, main.py, main_pcm.py) does not import it.
+websockets>=13

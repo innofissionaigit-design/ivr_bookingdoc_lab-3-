@@ -126,7 +126,15 @@ def seed_enquiry_demo_data(db=None) -> dict:
     db = db or SessionLocal()
     added = 0
     try:
-        dept_by_name = {d.name: d for d in db.query(Department).all()}
+        # id and name only, never the whole entity: a full query(Department)
+        # selects every mapped column, and Department gained name_bn/name_hi
+        # (the spoken forms, without which a reply naming a department is
+        # blocked on the Bengali and Hindi voices). A migration can run before
+        # seed.add_i18n_columns() has added them -- the real app orders it
+        # correctly (clinic-api/main.py) but a migration called on its own does
+        # not -- and a full select then fails with "no such column" on exactly
+        # the old databases these functions exist to upgrade.
+        dept_by_name = {name: dept_id for dept_id, name in db.query(Department.id, Department.name).all()}
         test_by_name = {t.name: t for t in db.query(LabTest).all()}
         doctor = db.query(Doctor).first()
 
@@ -154,12 +162,12 @@ def seed_enquiry_demo_data(db=None) -> dict:
         if (
             "General Medicine" in dept_by_name
             and not db.query(WalkInPolicy)
-            .filter_by(department_id=dept_by_name["General Medicine"].id, lab_test_id=None)
+            .filter_by(department_id=dept_by_name["General Medicine"], lab_test_id=None)
             .first()
         ):
             db.add(
                 WalkInPolicy(
-                    department_id=dept_by_name["General Medicine"].id,
+                    department_id=dept_by_name["General Medicine"],
                     lab_test_id=None,
                     allowed=True,
                     queue_note_bn="সাধারণত ২০-৩০ মিনিট অপেক্ষা করতে হতে পারে।",
@@ -221,7 +229,7 @@ def seed_enquiry_demo_data(db=None) -> dict:
         if not db.query(DepartmentHours).first() and "Cardiology" in dept_by_name:
             db.add(
                 DepartmentHours(
-                    department_id=dept_by_name["Cardiology"].id,
+                    department_id=dept_by_name["Cardiology"],
                     hours_bn="কার্ডিওলজি বিভাগ সকাল ১০টা থেকে দুপুর ১২টা এবং সন্ধ্যা ৬টা থেকে ৮টা পর্যন্ত খোলা।",
                     hours_hi="कार्डियोलॉजी विभाग सुबह 10 से 12 बजे और शाम 6 से 8 बजे तक खुला रहता है।",
                     hours_en="The Cardiology department is open 10am-12pm and 6pm-8pm.",

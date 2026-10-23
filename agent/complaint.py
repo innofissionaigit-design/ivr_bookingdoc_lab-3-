@@ -200,6 +200,18 @@ _HI = (
     "मुझे शिकायत दर्ज करनी है",
     "शिकायत दर्ज कीजिए",
     "शिकायत दर्ज करनी है",
+    # The CAUSATIVE forms: करानी / कराना / कराऊँ, not करनी / करना. One letter
+    # apart in writing and the commonest way a Hindi speaker says it -- "to
+    # GET a complaint registered" rather than "to register" it -- because the
+    # registering is something the clinic does on their behalf. Without these
+    # the most deliberate, most formal phrasing, which is the one a caller
+    # uses when they actually mean it, was the one that fell through.
+    "शिकायत दर्ज करानी है",
+    "शिकायत दर्ज कराना है",
+    "शिकायत दर्ज करवानी है",
+    "शिकायत दर्ज करवाना है",
+    "शिकायत दर्ज कराना चाहता हूँ",
+    "शिकायत दर्ज कराना चाहती हूँ",
     "मैं शिकायत दर्ज कराना चाहता हूँ",
     "मेरी शिकायत लिख लीजिए",
     "मेरी शिकायत नोट कर लीजिए",

@@ -994,31 +994,64 @@ def _department_doctor_names(db: Session, department_id: int, limit: int = MAX_S
     ]
 
 
+# Spellings of the same word that ASR and callers both produce, folded to one before a symptom is matched. Found on a
+# live call (2026-10-07): "আমার মাথা ব্যাথা করছে". "ব্যাথা" is the commonest written form of "ব্যথা" (pain), and every
+# pain keyword in DEPARTMENT_ROUTE_KEYWORDS is spelled "ব্যথা" -- so "পায়ে ব্যাথা", "পেটে ব্যাথা", "বুকে ব্যাথা" all
+# matched nothing while "পায়ে ব্যথা" went to Orthopaedics. This changes no keyword and adds no clinical content: it only
+# lets the clinician-approved keywords match the way the word is actually written. Applied to both sides.
+_SYMPTOM_SPELLINGS = (("ব্যাথ", "ব্যথ"), ("বেথা", "ব্যথা"))
+
+
+def _fold_symptom_spelling(text: str) -> str:
+    for variant, canonical in _SYMPTOM_SPELLINGS:
+        text = text.replace(variant, canonical)
+    return text
+
+
 def route_department(db: Session, query_text: str, lang: str) -> dict:
     """Symptom text -> department, plus (KCD-lay-terms) the real doctors in it, so the agent can name someone
     instead of only the department. `phrase_matches` tolerates a word or two inserted inside a keyword phrase --
     "বুকে ব্যথা" (chest pain) must still match "বুকে খুব ব্যথা" (chest REALLY hurts), an ordinary way to say it."""
-    q = query_text.lower()
+    q = _fold_symptom_spelling(query_text.lower())
     matches: list[int] = []
     for r in db.query(DepartmentRoute).all():
         kws = {"bn": r.keywords_bn, "hi": r.keywords_hi, "en": r.keywords_en}.get(lang, r.keywords_en)
-        if any(kw and phrase_matches(kw.lower(), q) for kw in kws.split("|")):
+        if any(kw and phrase_matches(_fold_symptom_spelling(kw.lower()), q) for kw in kws.split("|")):
             matches.append(r.department_id)
     matches = list(dict.fromkeys(matches))
     if not matches:
         return {"matched": False}
+    # The Latin keys below keep their exact previous meaning -- callers and
+    # tests depend on `department_name` being the catalogue value. The "_bn" /
+    # "_hi" twins are ADDED beside them, the same shape as alias_bn and
+    # did_you_mean_bn, because on the Bengali and Hindi voices a Latin
+    # department name is not mispronounced but DROPPED by the tokenizer, so
+    # agent/tts.py blocked the whole reply (UnspeakableTextError) and the
+    # caller heard the system-busy fallback instead of an answer. The reply
+    # template picks the one its language can say; see
+    # agent/reply_templates.spoken_department().
     if len(matches) > 1:
         depts = [db.get(Department, m) for m in matches[:2]]
         return {
             "matched": False,
             "ambiguous": True,
             "candidates": [d.name for d in depts],
+            "candidates_bn": [d.spoken_name("bn") for d in depts],
+            "candidates_hi": [d.spoken_name("hi") for d in depts],
             "doctors_by_department": {d.name: _department_doctor_names(db, d.id) for d in depts},
+            "doctors_by_department_bn": {
+                d.spoken_name("bn"): _department_doctor_names(db, d.id) for d in depts
+            },
+            "doctors_by_department_hi": {
+                d.spoken_name("hi"): _department_doctor_names(db, d.id) for d in depts
+            },
         }
     dept = db.get(Department, matches[0])
     return {
         "matched": True,
         "department_name": dept.name,
+        "department_name_bn": dept.spoken_name("bn"),
+        "department_name_hi": dept.spoken_name("hi"),
         "department_id": dept.id,
         "doctors": _department_doctor_names(db, dept.id),
     }

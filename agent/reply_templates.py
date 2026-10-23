@@ -55,6 +55,19 @@ def missing_slot_prompt(intent: str, missing: str, lang: str = "bn") -> str:
         ("book_appointment", "phone"): "একটা ফোন নম্বর দেবেন, যাতে কনফার্মেশন পাঠাতে পারি?",
         ("test_prep", "test_name"): "কোন টেস্টের প্রস্তুতি জানতে চান, একটু বলবেন?",
         ("clinic_faq", "faq_topic"): "দুঃখিত, ঠিক বুঝতে পারলাম না। আর একটু বলবেন?",
+        # A caller who wants a doctor but cannot name one lands on
+        # department_query with no symptom to route (agent/llm.py fills
+        # symptom_description only from a described problem, and
+        # agent/doctor_list.py's docstring notes department_query cannot
+        # answer "what departments do you have"). Without this entry the
+        # turn fell to the generic "unclear" phrase, which tells the caller
+        # nothing and re-asks the same unanswerable question -- observed on
+        # the live call of 2026-10-06: "I want to see a doctor" -> "which
+        # doctor?" -> "a doctor in a department" -> "sorry, I didn't
+        # understand". Asking for the PROBLEM is the one question that
+        # moves that caller forward, because the symptom is exactly what
+        # route_department() needs. It asks; it asserts no clinical fact.
+        ("department_query", "symptom_description"): "কী সমস্যা হচ্ছে একটু বলবেন? সেই অনুযায়ী কোন বিভাগে দেখাতে হবে বলে দিচ্ছি।",
         ("book_test", "test_names"): "কোন টেস্টগুলো বুক করতে চান, একটু বলবেন?",
         ("book_test", "date"): "কোন দিনের জন্য টেস্ট করাতে চান?",
         ("book_test", "patient_name"): "রোগীর নামটা বলবেন?",
@@ -66,6 +79,7 @@ def missing_slot_prompt(intent: str, missing: str, lang: str = "bn") -> str:
         ("add_test_booking", "confirmation_id"): "আপনার কনফার্মেশন নম্বরটা বলবেন?",
         ("add_test_booking", "test_name"): "কোন টেস্টটা যোগ করতে চান?",
         ("lookup_booking", "phone"): "যে নম্বর থেকে বুক করেছিলেন সেটা বলবেন?",
+        ("lookup_booking", "patient_name"): "কার নামে বুক করা হয়েছিল? রোগীর নামটা বলবেন?",
         # ADDED BY SOURAV: KCD-387 full flow -- one prompt per still-missing fact in the home
         # collection flow, same "one question per missing slot" shape as every entry above.
         ("home_collection", "test_name"): "কোন টেস্টটা বাড়িতে এসে করানোর কথা জিজ্ঞেস করছেন, একটু বলবেন?",
@@ -123,6 +137,22 @@ def test_rate_reply(slots: dict, result: dict, lang: str = "bn") -> str:
     return reply
 
 
+# story: "Caller asks the price of a test" -- several at once, summed. One implementation for all three
+# languages (agent/reply_templates_i18n.py), re-exported here like every other reply main.py speaks.
+spoken_test_name = _i18n.spoken_test_name
+move_day_prompt = _i18n.move_day_prompt
+move_time_prompt = _i18n.move_time_prompt
+move_same_day_prompt = _i18n.move_same_day_prompt
+test_list_page = _i18n.test_list_page
+test_list_reoffer = _i18n.test_list_reoffer
+test_group_reply = _i18n.test_group_reply
+test_confirm_prompt = _i18n.test_confirm_prompt
+which_tests_prompt = _i18n.which_tests_prompt
+test_choice_prompt = _i18n.test_choice_prompt
+unfound_test = _i18n.unfound_test
+multi_test_rate_reply = _i18n.multi_test_rate_reply
+
+
 def doctor_availability_reply(slots: dict, result: dict, lang: str = "bn") -> str:
     if lang != "bn":
         return _i18n.doctor_availability_reply(slots, result, lang)
@@ -143,14 +173,17 @@ def doctor_availability_reply(slots: dict, result: dict, lang: str = "bn") -> st
         )
 
     name = _spoken_doctor_name(slots, result)
+    days = _i18n.chamber_days_reply(name, slots, result, "bn")
+    if days:
+        return days
     if result.get("available"):
         hours = result.get("chamber_hours", "")
         date_txt = f" {result.get('date')} তারিখে" if result.get("date") else " আজ"
-        return f"হ্যাঁ,{date_txt} {name} চেম্বারে থাকবেন। সময়: {hours}।"
+        return f"হ্যাঁ,{date_txt} {name} {hours} চেম্বারে থাকবেন।"
 
     next_date = result.get("next_available_date")
     if next_date:
-        return f"{name} ওই দিন বসবেন না। পরবর্তী উপলব্ধ দিন: {next_date}।"
+        return f"{name} ওই দিন বসবেন না। ওঁর পরের বসার দিন {_i18n.spoken_day(next_date, 'bn')}।"
     return f"{name} এখন কোনো নির্দিষ্ট দিন বসছেন না। আমাদের কাউন্টারে খোঁজ নিতে পারেন।"
 
 
@@ -228,6 +261,28 @@ def doctor_offer_prompt(result: dict, lang: str = "bn", ask_time: bool = False) 
     return (
         f"হ্যাঁ, {doctor}। ওঁর পরের বসার দিন {_i18n.spoken_day(next_date, 'bn')} তারিখ{hours_clause}। "
         f"ওই দিনে করব, নাকি অন্য কোনো দিন?{time_clause}"
+    )
+
+
+def doctor_day_unavailable_prompt(result: dict, lang: str = "bn", sitting_over: bool = False) -> str:
+    """The day the caller gave is one the doctor does not sit. Name the doctor, say so, and offer their
+    next sitting -- instead of "the doctor doesn't sit that day, say another day?", which names nobody
+    and leaves the caller guessing days (the sibling tree's booking_day_unavailable_prompt). `result` is
+    clinic-api's availability answer with no date, i.e. the doctor's next sitting. `sitting_over`: the
+    day was today and the doctor does sit today, but the chamber is already over -- said as such, since
+    "does not sit that day" would be false."""
+    if lang != "bn":
+        return _i18n.doctor_day_unavailable_prompt(result, lang, sitting_over)
+    doctor = _spoken_doctor_name({}, result)
+    refusal = f"{doctor}-এর আজকের চেম্বারের সময় পেরিয়ে গেছে" if sitting_over else f"{doctor} ওই দিন বসেন না"
+    next_date = result.get("next_available_date") or result.get("date")
+    if not next_date:
+        return f"{refusal}, সামনের দুই সপ্তাহেও বসছেন না। অন্য কোনো ডাক্তারের কথা বলব?"
+    hours = result.get("chamber_hours")
+    hours_clause = f", চেম্বারের সময় {hours}" if hours else ""
+    return (
+        f"{refusal}। ওঁর পরের বসার দিন {_i18n.spoken_day(next_date, 'bn')} তারিখ{hours_clause}। "
+        "ওই দিনে করব, নাকি অন্য কোনো দিন?"
     )
 
 
@@ -320,8 +375,9 @@ def booking_reply(slots: dict, result: dict, lang: str = "bn") -> str:
         return f"দুঃখিত, '{slots.get('doctor_name')}' নামে কোনো ডাক্তার খুঁজে পেলাম না।"
     if reason == "doctor_not_available_that_day":
         return "দুঃখিত, ওই দিন ডাক্তার বসেন না। অন্য কোনো দিন বলবেন?"
-    if reason == "invalid_slot":
-        return "দুঃখিত, ওই সময়টা ঠিক নেই। চেম্বারের সময়ের মধ্যে একটা সময় বলবেন?"
+    slot_refusal = _slot_refusal_bn(result, slots.get("time_slot"))
+    if slot_refusal:
+        return slot_refusal
     if reason == "date_in_past":
         # KCD-363: never silently rolled forward -- stated plainly, and
         # the caller is offered the same weekday next week.
@@ -331,7 +387,79 @@ def booking_reply(slots: dict, result: dict, lang: str = "bn") -> str:
     return "দুঃখিত, অ্যাপয়েন্টমেন্ট বুক করা গেল না। একটু পরে আবার চেষ্টা করুন, অথবা কাউন্টারে যোগাযোগ করুন।"
 
 
+def off_grid_neighbours(asked: str | None, valid: list) -> tuple[str, str, int | None] | None:
+    """The two chamber start times either side of a time that is INSIDE the chamber but not one of its starts.
+
+    Live 2026-10-10: "দশটা কুড়ি" (10:20) for a 10:00-12:00 chamber that starts a booking every 15 minutes was refused
+    with "say a time between 10:00 and 11:45" -- a range 10:20 is already inside -- so the caller said it again, and
+    again. The clinic's own `valid_slots` list is the only source here: the neighbours are the entries of that list
+    either side of the asked time, and the step is the gap between its entries (None if they are not evenly spaced).
+    Returns None -- and the caller keeps the range wording -- when the time is outside the range, is itself a start,
+    or cannot be read."""
+
+    def minutes(value) -> int | None:
+        try:
+            hour, minute = str(value).split(":")
+            return int(hour) * 60 + int(minute)
+        except (ValueError, TypeError):
+            return None
+
+    if not asked or len(valid) < 2:
+        return None
+    want = minutes(asked)
+    starts = {minutes(v): str(v) for v in valid}
+    if want is None or None in starts or want in starts:
+        return None
+    ordered = sorted(starts)
+    if not ordered[0] < want < ordered[-1]:
+        return None
+    below = max(m for m in ordered if m < want)
+    above = min(m for m in ordered if m > want)
+    gaps = {b - a for a, b in zip(ordered, ordered[1:])}
+    return starts[below], starts[above], (gaps.pop() if len(gaps) == 1 else None)
+
+
+_BN_DIGITS = str.maketrans("0123456789", "০১২৩৪৫৬৭৮৯")
+
+
+def _slot_refusal_bn(result: dict, asked: str | None = None) -> str | None:
+    """The clinic refused the TIME (or today's chamber is over). Shared by booking and rescheduling.
+
+    valid_slots are chamber START TIMES from the schedule, not free ones -- so they are said as a range
+    ("between 10:00 and 11:45"), never as "these are free" (slot_taken's alternatives are the free ones).
+    `asked` is the time the caller gave, when the caller of this knows it: a time inside the range that is not on
+    the clinic's grid is answered with the two start times either side of it (off_grid_neighbours)."""
+    reason = result.get("reason")
+    valid = result.get("valid_slots") or []
+    if reason == "invalid_slot":
+        near = off_grid_neighbours(asked, valid)
+        if near:
+            below, above, step = near
+            every = f" — সময়গুলো {str(step).translate(_BN_DIGITS)} মিনিট পরপর।" if step else "।"
+            return f"দুঃখিত, {asked}-এ অ্যাপয়েন্টমেন্ট হয় না{every} {below} বা {above}, কোনটা হলে হবে?"
+        if valid:
+            return f"দুঃখিত, ওই সময়ে অ্যাপয়েন্টমেন্ট হয় না। {valid[0]} থেকে {valid[-1]}-এর মধ্যে একটা সময় বলবেন?"
+        return "দুঃখিত, ওই সময়টা ঠিক নেই। চেম্বারের সময়ের মধ্যে একটা সময় বলবেন?"
+    if reason == "slot_passed":
+        # A real chamber time, already gone today (the call is later in the day than it).
+        if valid:
+            return f"ওই সময়টা আজ পেরিয়ে গেছে। আজ {valid[0]} থেকে {valid[-1]}-এর মধ্যে একটা সময় বলবেন, নাকি অন্য দিন?"
+        return "ওই সময়টা আজ পেরিয়ে গেছে। অন্য কোনো দিন বলবেন?"
+    if reason == "sitting_over":
+        return "আজকের চেম্বারের সময় পেরিয়ে গেছে। অন্য কোনো দিন বলবেন?"
+    return None
+
+
 # story: "Caller cannot give a contact number"
+def no_booking_on_number(phone: str, lang: str = "bn") -> str:
+    """A whole number was heard and the clinic has no booking on it. Said back digit by digit, so a misheard digit is
+    caught by the caller -- instead of "give me your confirmation number or phone" again, as though nothing was said."""
+    if lang != "bn":
+        return _i18n.no_booking_on_number(phone, lang)
+    spelled = " ".join(phone)
+    return f"{spelled} নম্বরে কোনো বুকিং খুঁজে পেলাম না। কনফার্মেশন নম্বরটা বলবেন, বা যে নম্বর থেকে বুক করেছিলেন সেটা আরেকবার বলবেন?"
+
+
 def phone_continue_prompt(so_far: str, lang: str = "bn") -> str:
     """The caller is reading a number out in pieces. Say back what is held so far and ask for the
     rest, instead of asking for "a phone number" again as though nothing had been given.
@@ -364,8 +492,13 @@ def booking_confirmation_readback(slots: dict, action: str, lang: str = "bn") ->
         # rather than repeated.
         phone = slots.get("contact_phone") or slots.get("phone")
         phone_clause = f", ফোন নম্বর {phone} " if phone else " "
+        # The doctor as the Bengali voice can SAY it (doctor_name_bn, from clinic-api when the doctor
+        # was confirmed -- main.py _settle_doctor). The Latin catalogue name ("Dr. A. Sen") is dropped by
+        # the Bengali tokenizer, so agent/tts.py blocked this whole question and the caller heard the
+        # system-busy fallback at the one step a booking cannot be finished without.
+        doctor = slots.get("doctor_name_bn") or slots.get("doctor_name")
         return (
-            f"তাহলে {slots.get('doctor_name')} ডাক্তারের কাছে {slots.get('date')} তারিখে, "
+            f"তাহলে {doctor} ডাক্তারের কাছে {_i18n.spoken_day(slots.get('date'), 'bn')} তারিখে, "
             f"সময় {slots.get('time_slot')}-এ, রোগীর নাম {slots.get('patient_name')}"
             f"{phone_clause}-- এই অ্যাপয়েন্টমেন্টটা কনফার্ম করব?"
         )
@@ -381,8 +514,16 @@ def booking_confirmation_readback(slots: dict, action: str, lang: str = "bn") ->
             f"{phone_clause}-- এই বুকিংটা কনফার্ম করব?"
         )
     if action == "reschedule_appointment":
-        return f"তাহলে অ্যাপয়েন্টমেন্টটা {slots.get('new_date')} তারিখে, সময় {slots.get('new_time_slot')}-এ নিয়ে যাব?"
+        return (
+            f"তাহলে অ্যাপয়েন্টমেন্টটা {_i18n.spoken_day(slots.get('new_date'), 'bn')} তারিখে, "
+            f"সময় {slots.get('new_time_slot')}-এ নিয়ে যাব?"
+        )
     if action == "cancel_appointment":
+        # Found by the number the caller read out: that number is read back, digit by digit, so a misheard digit that
+        # found a DIFFERENT booking is caught before it is cancelled. Their own words only -- nothing of the booking
+        # itself is said to a caller who has only claimed the number.
+        if slots.get("phone"):
+            return f"{' '.join(slots['phone'])} নম্বর থেকে করা অ্যাপয়েন্টমেন্টটা বাতিল করে দেব?"
         return "আপনার অ্যাপয়েন্টমেন্টটা বাতিল করে দেব?"
     if action == "add_test_booking":
         return f"তাহলে আপনার বুকিং-এ {slots.get('test_name')} টেস্টটা যোগ করে দেব?"
@@ -406,6 +547,9 @@ def reschedule_reply(result: dict, lang: str = "bn") -> str:
         if alts:
             return f"ওই সময়টা বুক হয়ে গেছে। এই সময়গুলো ফাঁকা আছে: {', '.join(alts)}। কোনটা চান?"
         return "ওই সময়টা বুক হয়ে গেছে। আপনার আগের অ্যাপয়েন্টমেন্টটা ঠিক আগের মতোই আছে।"
+    slot_refusal = _slot_refusal_bn(result)
+    if slot_refusal:
+        return slot_refusal
     return "দুঃখিত, অ্যাপয়েন্টমেন্টটা পাল্টানো গেল না। আপনার আগের অ্যাপয়েন্টমেন্টটা ঠিক আগের মতোই আছে।"
 
 
@@ -535,13 +679,66 @@ def _grouped(items: list[str], size: int = _NAMES_PER_GROUP) -> list[list[str]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
-def blood_test_list_reply(names: list[str], lang: str = "bn") -> str:
+def doctor_chosen_ack(slots: dict, lang: str = "bn") -> str:
+    """Say WHO the caller just chose, when nothing else will. "প্রথমজন" ("the first one") picks a doctor
+    from a list; if the day was already given, the next sentence is "the patient's name and phone?", and
+    the caller does not hear which doctor they are booking until the final read-back. Spoken name only
+    (readback_slots), never the Latin catalogue name the Bengali and Hindi voices cannot say."""
+    if lang != "bn":
+        return _i18n.doctor_chosen_ack(slots, lang)
+    return f"ঠিক আছে, {slots.get('doctor_name_bn') or slots.get('doctor_name')} ডাক্তার।"
+
+
+def doctor_choice_prompt(departments: list[str], lang: str = "bn") -> str:
+    """The caller wants a doctor and named none ("আমি একজন ডক্টর দেখাব", "I want to see a
+    doctor"). Ask WHICH, and give a caller who does not know a name the way forward: the
+    problem, or one of the clinic's departments, read from the live list.
+
+    Exists because the alternative was the live call of 2026-10-06, where "a doctor" was
+    treated as a doctor's name, the caller was asked for a day and a time, and only then
+    told that nobody by that name worked here. `departments` are the SPOKEN names from
+    clinic-api (Department.name_bn / name_hi), never the Latin catalogue names, which the
+    Bengali and Hindi voices cannot say; an empty list (the lookup failed) drops that
+    sentence rather than the question.
+    """
+    if lang != "bn":
+        return _i18n.doctor_choice_prompt(departments, lang)
+    ask = "কোন ডাক্তার দেখাতে চান? নাম জানা না থাকলে কী সমস্যা হচ্ছে বা কোন বিভাগ, সেটা বলুন।"
+    if not departments:
+        return ask
+    listed = "। ".join(", ".join(g) for g in _grouped(departments))
+    return f"{ask} আমাদের এই বিভাগগুলো আছে -- {listed}।"
+
+
+def department_list_prompt(departments: list[str], lang: str = "bn") -> str:
+    """"What departments do you have?" -- answered with the clinic's departments, live from clinic-api, then the one
+    question that moves the caller on: which department, or what the problem is.
+
+    The intent model files this question as department_query with no symptom (live call 2026-10-07: "কোন কোন
+    ডিপার্টমেন্ট আছে আপনাদের ওখানে" -> department_query, symptom_description null). Asking that caller "what is the
+    problem?" answered nothing they asked. The departments come first; the symptom route stays open in one clause.
+    An empty list (the lookup failed) falls back to asking for the problem, which still moves them forward.
+    """
+    if lang != "bn":
+        return _i18n.department_list_prompt(departments, lang)
+    if not departments:
+        return "কী সমস্যা হচ্ছে একটু বলবেন? সেই অনুযায়ী কোন বিভাগে দেখাতে হবে বলে দিচ্ছি।"
+    listed = "। ".join(", ".join(g) for g in _grouped(departments))
+    return f"আমাদের এই বিভাগগুলো আছে -- {listed}। কোন বিভাগে দেখাতে চান? কী সমস্যা হচ্ছে বললেও ঠিক বিভাগটা বলে দিতে পারি।"
+
+
+def blood_test_list_reply(names: list[str], lang: str = "bn", spoken: list[str] | None = None) -> str:
     """ "রক্ত পরীক্ষা" ("a blood test") on its own names nothing: the REAL list of blood tests, off the live catalogue
     (main.py's lay-term handling, agent/lay_terms.py), read as their short codes (agent/catalogue_forms.lab_test_code)
-    rather than full clinical names -- "CBC" is what a caller says back, not "Complete Blood Count"."""
+    rather than full clinical names -- "CBC" is what a caller says back, not "Complete Blood Count".
+
+    `spoken`: the clinic's own Bengali / Hindi name for each test, in the same order, when every test has one. The
+    codes are Latin letters and the Bengali and Hindi voices cannot say them -- the speech gate blocks the whole line
+    (a whole-call matrix, 2026-10-12: the caller who said "রক্ত পরীক্ষা করাতে চাই" would have heard the busy
+    fallback). Without them, the codes are what this always read."""
     from agent.catalogue_forms import lab_test_code
 
-    spoken = [lab_test_code(n) for n in names]
+    spoken = list(spoken) if spoken and len(spoken) == len(names) else [lab_test_code(n) for n in names]
     if lang != "bn":
         return _i18n.blood_test_list_reply(spoken, lang)
     if not spoken:
@@ -574,11 +771,14 @@ def department_route_reply(result: dict, symptom: str, lang: str = "bn") -> str:
         # (clinic-api's _department_doctor_names), never invented -- an empty list just omits the sentence.
         doctors = result.get("doctors") or []
         who = f" আমাদের এখানে {' ও '.join(doctors)} আছেন।" if doctors else ""
-        return f"এই সমস্যার জন্য {result['department_name']} বিভাগে দেখানো ভালো হবে।{who} ডাক্তারের অ্যাপয়েন্টমেন্ট করে দেব?"
+        dept = spoken_department(result, "bn", "department_name")
+        return f"এই সমস্যার জন্য {dept} বিভাগে দেখানো ভালো হবে।{who} ডাক্তারের অ্যাপয়েন্টমেন্ট করে দেব?"
     if result.get("ambiguous"):
-        by_dept = result.get("doctors_by_department") or {}
+        # The Bengali-keyed map and the Bengali candidate list, so neither the
+        # department names nor the question itself is blocked by agent/tts.py.
+        by_dept = result.get("doctors_by_department_bn") or result.get("doctors_by_department") or {}
         parts = []
-        for name in result["candidates"]:
+        for name in (result.get("candidates_bn") or result["candidates"]):
             docs = by_dept.get(name) or []
             parts.append(f"{name} ({', '.join(docs)})" if docs else name)
         return f"এটা {' অথবা '.join(parts)} -- দুটোর যেকোনো একটা বিভাগ হতে পারে। কোনটা বলবেন?"
@@ -680,11 +880,34 @@ def doctor_list_reply(result: dict, lang: str = "bn") -> str:
     if not result.get("found") or not names:
         return "দুঃখিত, এই মুহূর্তে ডাক্তারদের তালিকা দেখতে পারছি না। কাউন্টারে জিজ্ঞেস করে নিতে পারেন।"
     if len(names) > MAX_DOCTORS_SPOKEN:
-        departments = sorted({d.get("department") for d in result["doctors"] if d.get("department")})
+        departments = spoken_departments(result["doctors"], "bn")
         listed = "। ".join(", ".join(g) for g in _grouped(departments))
         return f"আমাদের এই বিভাগগুলোতে ডাক্তার বসেন -- {listed}। কোন বিভাগের কথা বলছেন?"
     listed = "। ".join(", ".join(g) for g in _grouped(names))
     return f"আমাদের এখানে এই ডাক্তাররা বসেন -- {listed}। কার কাছে অ্যাপয়েন্টমেন্ট নিতে চান?"
+
+
+def spoken_department(result: dict, lang: str, key: str = "department") -> str:
+    """The department as `lang` can SAY it, falling back to the Latin name.
+
+    A Latin department name on the Bengali or Hindi voice is not mispronounced,
+    it is DROPPED by the tokenizer, so agent/tts.py blocks the whole reply and
+    the caller hears the system-busy fallback instead of an answer. clinic-api
+    therefore sends "<key>_bn" / "<key>_hi" beside the Latin "<key>" -- the same
+    shape as alias_bn and did_you_mean_bn -- and this picks the right one.
+
+    Falling back to the Latin name rather than to "" is deliberate: a blocked
+    reply is loud and logged ("unspeakable spans"), whereas a silently dropped
+    department name would be a reply with a hole in it, which is the exact
+    failure UnspeakableTextError was added to stop.
+    """
+    return result.get(f"{key}_{lang}") or result.get(key) or ""
+
+
+def spoken_departments(items: list, lang: str, key: str = "department") -> list[str]:
+    """spoken_department() over a list of rows, de-duplicated and sorted."""
+    out = {spoken_department(row, lang, key) for row in items if isinstance(row, dict)}
+    return sorted(n for n in out if n)
 
 
 def doctors_by_department_reply(result: dict, lang: str = "bn") -> str:
@@ -698,7 +921,7 @@ def doctors_by_department_reply(result: dict, lang: str = "bn") -> str:
     if lang != "bn":
         return _i18n.doctors_by_department_reply(result, lang)
     if not result.get("found"):
-        offered = result.get("did_you_mean") or []
+        offered = result.get("did_you_mean_bn") or result.get("did_you_mean") or []
         if result.get("ambiguous") and offered:
             return f"একাধিক বিভাগ পেলাম -- আপনি {' নাকি '.join(offered)}, কোনটার কথা বলছেন?"
         if offered:
@@ -708,7 +931,7 @@ def doctors_by_department_reply(result: dict, lang: str = "bn") -> str:
             "অন্য কোনো বিভাগ বা ডাক্তারের নাম বলবেন?"
         )
     names = _spoken_doctors(result, "bn")
-    department = result.get("department") or ""
+    department = spoken_department(result, "bn")
     if not names:
         return f"{department} বিভাগে এই মুহূর্তে কোনো ডাক্তার তালিকায় নেই। অন্য কোনো বিভাগের কথা বলব?"
     listed = "। ".join(", ".join(g) for g in _grouped(names))

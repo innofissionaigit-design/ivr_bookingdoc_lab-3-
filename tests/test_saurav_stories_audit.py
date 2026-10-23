@@ -230,16 +230,22 @@ def test_04_a_request_for_a_person_is_recognised_in_every_language():
         assert asks_for_a_person(text, lang), (lang, text)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "GAP, narrow: the English patterns all need a verb of wanting or asking ('I want...', "
-    "'connect me...'). A bare imperative -- 'give me a human', 'human please' -- is not matched, "
-    "so the most abrupt phrasing, which is the one an exasperated caller uses, falls through to "
-    "the model instead of escalating on the turn."))
 def test_04_a_bare_imperative_also_escalates():
+    """CLOSED: was a gap -- every pattern needed a preposition ("put me THROUGH
+    TO a person") or a verb of wanting ("I NEED someone"), so the clipped form
+    an exasperated caller actually uses matched nothing. agent/human_request.py
+    now carries two bare-imperative patterns, built on the narrower
+    _EN_PERSON_ONLY list so "give me the counter number" still does not
+    escalate, and they inherit the existing negation guard."""
     from agent.human_request import asks_for_a_person
 
     assert asks_for_a_person("give me a human", "en")
     assert asks_for_a_person("human please", "en")
+    assert asks_for_a_person("get me someone", "en")
+    # The negation guard still wins over the new patterns.
+    assert not asks_for_a_person("don't give me a human", "en")
+    # And an ordinary enquiry that merely contains a staff noun does not.
+    assert not asks_for_a_person("give me the counter number", "en")
 
 
 def test_04_a_refusal_of_a_person_is_not_read_as_a_request():
@@ -452,11 +458,10 @@ def test_08_the_reply_names_the_doctor_and_the_hours_in_every_language(clinic):
         assert said and result["chamber_hours"] in said, (lang, said)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "GAP, already tracked: 'spoken as natural language without field labels'. The Bengali "
-    "availability reply says 'সময়: {hours}' and 'পরবর্তী উপলব্ধ দিন: {date}' -- a label, a "
-    "colon and a value, which is a field read out. Both are inside the 12 known artefacts "
-    "tests/test_spoken_text_lint.py ratchets down, so this is a logged debt, not a surprise."))
+# DELIBERATE SPEC CHANGE (2026-10-07): was a strict xfail -- "the Bengali availability reply says 'সময়: {hours}'
+# and 'পরবর্তী উপলব্ধ দিন: {date}'". Those labels are gone in all three languages (the hours and the next sitting are
+# now said inside the sentence), so the gap is closed and this is an ordinary passing test; the lint backlog in
+# tests/test_spoken_text_lint.py was lowered to match.
 def test_08_the_reply_has_no_field_labels(clinic):
     from agent.reply_templates import doctor_availability_reply
 
@@ -749,15 +754,21 @@ def test_17_clinical_interpretation_is_recognised_in_every_language():
         assert is_clinical_interpretation(text), text
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "GAP, narrow: the Bengali cues are the explicit danger words (বিপজ্জনক, সিরিয়াস). A caller "
-    "who asks the ordinary thing -- 'আমার রিপোর্টটা কি খারাপ?', is my report BAD -- is not "
-    "caught by the guard and reaches the model, which is the one path this story exists to "
-    "close."))
 def test_17_the_everyday_bengali_wording_is_also_caught():
+    """CLOSED: was a gap -- the Bengali cues were only the explicit danger words
+    (বিপজ্জনক, সিরিয়াস), and `_BN_ABNORMAL_NORMAL`'s "রিপোর্ট খারাপ" needed the two
+    words adjacent, which Bengali does not do: the definite suffix attaches to
+    the noun and a question particle sits between. So the ordinary phrasing a
+    worried caller uses reached the model -- the one path this story exists to
+    close. agent/clinical_safety.py now carries `_RE_BN_REPORT_BAD` (and the
+    Hindi mirror) in its gap-tolerant section."""
     from agent.clinical_safety import is_clinical_interpretation
 
     assert is_clinical_interpretation("আমার রিপোর্টটা কি খুব খারাপ?")
+    assert is_clinical_interpretation("আমার রিপোর্ট খারাপ?")
+    assert is_clinical_interpretation("मेरी रिपोर्ट खराब है क्या?")
+    # Still NOT a clinical question: asking when the report will be ready.
+    assert not is_clinical_interpretation("রিপোর্টটা কখন ভালো করে পাব")
 
 
 def test_17_the_routing_is_a_policy_guard_not_prompt_wording():
@@ -942,13 +953,16 @@ def test_22_a_complaint_is_recognised_in_every_language():
         assert is_complaint(text), text
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "GAP, narrow: the Hindi cues cover शिकायत करनी है but not शिकायत दर्ज कराना -- 'to REGISTER "
-    "a complaint', the formal phrasing a caller uses when they mean it most."))
 def test_22_the_formal_hindi_wording_is_also_caught():
+    """CLOSED: was a gap -- the cues had the simple verb (करनी, "to register")
+    but not the CAUSATIVE (करानी / करवानी, "to GET registered"), which is how a
+    Hindi speaker normally says it, the registering being something the clinic
+    does for them. One letter apart in writing; the formal phrasing a caller
+    uses when they most mean it was the one falling through."""
     from agent.complaint import is_complaint
 
     assert is_complaint("मुझे शिकायत दर्ज करानी है")
+    assert is_complaint("शिकायत दर्ज करवानी है")
 
 
 def test_22_it_is_acknowledged_once_without_argument():

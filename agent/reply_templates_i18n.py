@@ -78,6 +78,8 @@ _HI_MISSING = {
     ("book_appointment", "phone"): "एक फ़ोन नंबर दीजिए, ताकि मैं कन्फ़र्मेशन भेज सकूँ?",
     ("test_prep", "test_name"): "किस टेस्ट की तैयारी जाननी है, ज़रा बताइए?",
     ("clinic_faq", "faq_topic"): "माफ़ कीजिए, ठीक से समझ नहीं पाई। क्या आप फिर से बताएँगे?",
+    # See the Bengali entry in agent/reply_templates.py for why this exists.
+    ("department_query", "symptom_description"): "क्या तकलीफ़ हो रही है, ज़रा बताइए? उसी के हिसाब से बता दूँगी किस विभाग में दिखाना है।",
     ("book_test", "test_names"): "कौन से टेस्ट बुक करना चाहते हैं, ज़रा बताइए?",
     ("book_test", "date"): "किस दिन टेस्ट करवाना चाहते हैं?",
     ("book_test", "patient_name"): "मरीज़ का नाम बताइए?",
@@ -89,6 +91,7 @@ _HI_MISSING = {
     ("add_test_booking", "confirmation_id"): "आपका कन्फ़र्मेशन नंबर बताइए?",
     ("add_test_booking", "test_name"): "कौन सा टेस्ट जोड़ना चाहते हैं?",
     ("lookup_booking", "phone"): "जिस नंबर से बुक किया था वह बताइए?",
+    ("lookup_booking", "patient_name"): "बुकिंग किसके नाम से हुई थी? मरीज़ का नाम बताइए?",
     # ADDED BY SOURAV: KCD-387 full flow -- see reply_templates.py's own Bengali entries.
     ("home_collection", "test_name"): "किस टेस्ट के लिए घर पर सैंपल देने की बात पूछ रहे हैं, ज़रा बताइए?",
     ("home_collection", "postal_code"): "आपके इलाके का 6 अंकों का पिनकोड बताइए?",
@@ -109,6 +112,8 @@ _EN_MISSING = {
     ("book_appointment", "phone"): "Could you give me a phone number so I can send the confirmation?",
     ("test_prep", "test_name"): "Which test would you like the preparation for?",
     ("clinic_faq", "faq_topic"): "Sorry, I didn't quite get that. Could you say it again?",
+    # See the Bengali entry in agent/reply_templates.py for why this exists.
+    ("department_query", "symptom_description"): "Could you tell me what the problem is? I'll tell you which department to see.",
     ("book_test", "test_names"): "Which tests would you like to book?",
     ("book_test", "date"): "Which day would you like the tests for?",
     ("book_test", "patient_name"): "May I have the patient's name?",
@@ -126,6 +131,7 @@ _EN_MISSING = {
     ("add_test_booking", "confirmation_id"): "Could you give me your confirmation number?",
     ("add_test_booking", "test_name"): "Which test would you like to add?",
     ("lookup_booking", "phone"): "Could you give me the number you booked from?",
+    ("lookup_booking", "patient_name"): "Whose name is the booking under? Could you tell me the patient's name?",
     # ADDED BY SOURAV: KCD-387 full flow -- see reply_templates.py's own Bengali entries.
     ("home_collection", "test_name"): "Which test are you asking about for home collection?",
     ("home_collection", "postal_code"): "Could you give me your area's 6-digit pincode?",
@@ -224,6 +230,294 @@ def test_rate_reply(slots: dict, result: dict, lang: str) -> str:
     return reply
 
 
+# story: "Caller asks the price of a test" -- several tests in one question, and their total.
+_BENGALI = re.compile(r"[ঀ-৿]")
+
+
+def _rupees(value) -> str:
+    """400, never 400.0: the figure is spoken as written."""
+    number = float(value)
+    return str(int(number)) if number.is_integer() else str(number)
+
+
+def spoken_test_name(query: str, result: dict, lang: str) -> str:
+    """A FOUND test as this language's voice can say it: the clinic's own alias in that script, else
+    the caller's words when they are in that script, else the catalogue name."""
+    query = query or ""
+    if lang == "bn":
+        own = query if _BENGALI.search(query) and not _LATIN.search(query) else ""
+        return result.get("test_name_bn") or own or result.get("test_name") or query
+    if lang == "hi":
+        own = query if _DEVANAGARI.search(query) else ""
+        return result.get("test_name_hi") or own or result.get("test_name") or query
+    return result.get("test_name") or query
+
+
+def unfound_test(query: str, result: dict, lang: str) -> dict:
+    """What the multi-test reply needs to say about a test the clinic did not pin down: the caller's
+    words only if this language can say them, and the clinic's own suggestions in this script."""
+    script_ok = (
+        bool(_BENGALI.search(query or "")) and not _LATIN.search(query or "")
+        if lang == "bn"
+        else _script_ok(query or "", lang)
+    )
+    return {
+        "query": query if script_ok else "",
+        "suggestions": _suggestions(result, lang),
+        "ambiguous": bool(result.get("ambiguous")),
+    }
+
+
+def test_confirm_prompt(spoken_names: list[str], action: str, lang: str) -> str:
+    """Read the tests back and ask for a yes BEFORE any price is spoken (the acceptance layer).
+
+    Live 2026-10-08: ASR lost the names, the model supplied two of its own, and the caller was quoted a real
+    total for tests they never asked for. Nothing is priced now until the caller has heard which tests the agent
+    thinks they said. `spoken_names` are the caller's own words for them (agent/entity_grounding.forms)."""
+    listed = spoken_list(spoken_names, lang)
+    if lang == "bn":
+        # A name that already ends in "টেস্ট" ("ইকো টেস্ট", "ইউরিন টেস্ট") must not get another: "ইকো টেস্ট টেস্টের দাম".
+        named_test = listed.endswith("টেস্ট")
+        if action == "book_test":
+            return f"আপনি {listed} করবেন, ঠিক তো?" if named_test else f"আপনি {listed} টেস্ট করবেন, ঠিক তো?"
+        return (
+            f"আপনি {listed}ের দাম জানতে চান, ঠিক তো?"
+            if named_test
+            else f"আপনি {listed} টেস্টের দাম জানতে চান, ঠিক তো?"
+        )
+    if lang == "hi":
+        named_test = listed.endswith("टेस्ट")
+        if action == "book_test":
+            return f"आप {listed} कराएँगे, ठीक है ना?" if named_test else f"आप {listed} टेस्ट कराएँगे, ठीक है ना?"
+        return (
+            f"आप {listed} का दाम जानना चाहते हैं, ठीक है ना?"
+            if named_test
+            else f"आप {listed} टेस्ट का दाम जानना चाहते हैं, ठीक है ना?"
+        )
+    return (
+        f"You want the {listed} tests, is that right?"
+        if action == "book_test"
+        else f"You'd like the price of {listed}, is that right?"
+    )
+
+
+def which_tests_prompt(count: int | None, lang: str) -> str:
+    """Which tests -- asked, never guessed. `count` is how many the caller said they wanted (a different fact
+    from WHICH, see agent/entity_grounding.spoken_count): knowing it makes the question specific."""
+    if lang == "bn":
+        if count:
+            return f"আপনি {_COUNT_BN.get(count, count)} টেস্টের কথা বলছেন -- কোন কোন টেস্ট, একটু নাম বলবেন?"
+        return "কোন কোন টেস্টের কথা বলছেন, একটু নাম বলবেন?"
+    if lang == "hi":
+        if count:
+            return f"आप {_COUNT_HI.get(count, count)} टेस्ट की बात कर रहे हैं -- कौन कौन से, नाम बताएँगे?"
+        return "कौन कौन से टेस्ट की बात कर रहे हैं, नाम बताएँगे?"
+    if count:
+        return f"You mentioned {_COUNT_EN.get(count, count)} tests -- which ones? Could you say the names?"
+    return "Which tests do you mean? Could you say the names?"
+
+
+def test_choice_prompt(sure: list[str], candidates: list[str], both: bool, lang: str, reasked: bool = False) -> str:
+    """Two or three tests fit the words just heard about equally well ("টিএসএ": TSH or PSA): ask which, never pick. The tests
+    already understood are said first, so the caller hears they are kept and answers only the doubt. `both` is the case of
+    two stretches of words that each fit the same two tests: one question, "both?". Said in the caller's language, with the
+    clinic's own spoken names; one question per turn."""
+    have = spoken_list(sure, lang)
+
+    def options(word: str) -> str:
+        if len(candidates) < 2:
+            return candidates[0] if candidates else ""
+        return ", ".join(candidates[:-1]) + f" {word} " + candidates[-1]
+
+    if lang == "bn":
+        if reasked:
+            return f"ঠিক বুঝতে পারিনি -- {options('নাকি')}? নামটা একটু বলবেন?"
+        lead = f"{have} বুঝেছি। " if have else ""
+        if both:
+            return f"{lead}{spoken_list(candidates, lang).strip()} -- দুটোই বলছেন?"
+        return f"{lead}আরেকটা টেস্ট -- {options('নাকি')}?" if have else f"কোনটা -- {options('নাকি')}?"
+    if lang == "hi":
+        if reasked:
+            return f"ठीक से समझ नहीं पाई -- {options('या')}? नाम बताएँगे?"
+        lead = f"{have} समझ गई। " if have else ""
+        if both:
+            return f"{lead}{spoken_list(candidates, lang).strip()} -- दोनों?"
+        return f"{lead}एक और टेस्ट -- {options('या')}?" if have else f"कौन सा -- {options('या')}?"
+    if reasked:
+        return f"Sorry -- {options('or')}? Please say the name."
+    lead = f"I have {have}. " if have else ""
+    if both:
+        return f"{lead}{spoken_list(candidates, lang).strip()} -- do you mean both?"
+    return f"{lead}And one more -- {options('or')}?" if have else f"Which one -- {options('or')}?"
+
+
+_COUNT_BN = {1: "একটা", 2: "দুটো", 3: "তিনটে", 4: "চারটে", 5: "পাঁচটা"}
+_COUNT_HI = {1: "एक", 2: "दो", 3: "तीन", 4: "चार", 5: "पांच"}
+_COUNT_EN = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five"}
+
+
+TEST_LIST_PAGE = 5  # tests read per turn: a phone line cannot hold 34 names and prices in one breath
+
+
+def test_group_reply(label: dict, tests: list[dict], lang: str, mode: str = "price") -> str:
+    """story: "Caller asks for a group of tests" -- "হার্টের টেস্ট", "সুগারের পরীক্ষা", "ভিটামিন টেস্ট".
+
+    `tests` are the group's members as GET /api/v1/tests gave them (name and rate): every name and price said is the
+    database's, substituted here, never the model's (CLAUDE.md section 1). `label` is how this group is said in each
+    language (agent/test_groups.TestGroup.label). mode "price": names with prices; "prep": names only, and which one's
+    preparation; "book": names with prices, and which one to book."""
+    lang = lang if lang in ("bn", "hi", "en") else "bn"
+    n = len(tests)
+    if mode == "prep":
+        items = [spoken_test_name("", t, lang) for t in tests]
+    elif lang == "bn":
+        items = [f"{spoken_test_name('', t, 'bn')} {_rupees(t['rate_inr'])} টাকা" for t in tests]
+    elif lang == "hi":
+        items = [f"{spoken_test_name('', t, 'hi')} {_rupees(t['rate_inr'])} रुपये" for t in tests]
+    else:
+        items = [f"{spoken_test_name('', t, 'en')}, {_rupees(t['rate_inr'])} rupees" for t in tests]
+    body = spoken_list(items, lang) + ("." if lang == "en" else "।")
+    word = label.get(lang) or label.get("bn") or ""
+    head = {
+        "bn": f"{word} টেস্ট আমাদের এখানে {n}টা আছে:" if n > 1 else f"{word} টেস্ট আমাদের এখানে একটাই:",
+        "hi": f"{word} टेस्ट हमारे यहाँ {n} हैं:" if n > 1 else f"{word} टेस्ट हमारे यहाँ एक ही है:",
+        "en": f"We have {n} {word} tests:" if n > 1 else f"We have one {word} test:",
+    }[lang]
+    tail = {
+        ("bn", "price"): "কোনো টেস্টের নাম বললে বিস্তারিত বলতে পারি।",
+        ("bn", "prep"): "কোনটার প্রস্তুতি জানতে চান?",
+        ("bn", "book"): "কোনটা করাতে চান?",
+        ("hi", "price"): "किसी टेस्ट का नाम बताएँ तो पूरी जानकारी दे सकती हूँ।",
+        ("hi", "prep"): "किस टेस्ट की तैयारी जाननी है?",
+        ("hi", "book"): "कौन सा करवाना चाहेंगे?",
+        ("en", "price"): "Name one and I can tell you more.",
+        ("en", "prep"): "Which one's preparation would you like to know?",
+        ("en", "book"): "Which one would you like to book?",
+    }[(lang, mode if mode in ("price", "prep", "book") else "price")]
+    return f"{head} {body} {tail}"
+
+
+def test_list_reoffer(lang: str) -> str:
+    """The test list is open and the caller said something that could not be placed (a garbled "পরের টেস্টগুলো"): say
+    so once, and offer the same two ways on as before -- never a bare "I did not understand" that drops the list."""
+    return {
+        "bn": "ঠিক বুঝতে পারিনি। আরও টেস্ট শুনবেন, নাকি কোনো টেস্টের নাম বলবেন?",
+        "hi": "ठीक से समझ नहीं पाई। और टेस्ट सुनेंगे, या किसी टेस्ट का नाम बताएँगे?",
+        "en": "Sorry, I did not catch that. Shall I go on with the tests, or would you like to name one?",
+    }.get(lang) or "ঠিক বুঝতে পারিনি। আরও টেস্ট শুনবেন, নাকি কোনো টেস্টের নাম বলবেন?"
+
+
+def test_list_page(listing: dict, offset: int, lang: str) -> tuple[str, int | None]:
+    """story: "Caller asks which lab tests are available" -- the next few tests, each with its price, and where to go
+    from there. -> (reply, the offset to continue from, or None when this was the last of them).
+
+    `listing` is clinic-api's GET /api/v1/tests answer: every name and price is the database's, substituted here,
+    never the model's (CLAUDE.md section 1). The first page says how many tests there are, so the caller knows what
+    "more" means."""
+    tests = listing.get("tests") or []
+    page = tests[offset : offset + TEST_LIST_PAGE]
+    if not page:
+        return (
+            {
+                "bn": "এই মুহূর্তে টেস্টের তালিকাটা পাচ্ছি না। কোনো টেস্টের নাম বললে দামটা বলে দিতে পারি।",
+                "hi": "अभी टेस्ट की सूची नहीं मिल रही। किसी टेस्ट का नाम बताएँ तो उसका दाम बता सकती हूँ।",
+                "en": "I can't get the list of tests just now. If you name a test, I can tell you its price.",
+            }[lang],
+            None,
+        )
+    items = {
+        "bn": [f"{spoken_test_name('', t, 'bn')} {_rupees(t['rate_inr'])} টাকা" for t in page],
+        "hi": [f"{spoken_test_name('', t, 'hi')} {_rupees(t['rate_inr'])} रुपये" for t in page],
+        "en": [f"{spoken_test_name('', t, 'en')}, {_rupees(t['rate_inr'])} rupees" for t in page],
+    }[lang]
+    body = spoken_list(items, lang) + ("." if lang == "en" else "।")
+    following = offset + len(page)
+    more = following < len(tests)
+    parts = []
+    if offset == 0:
+        n = len(tests)
+        parts.append({"bn": f"আমাদের এখানে মোট {n}টা টেস্ট হয়।", "hi": f"हमारे यहाँ कुल {n} टेस्ट होते हैं।",
+                      "en": f"We do {n} tests in all."}[lang])
+    parts.append(body)
+    if more:
+        parts.append({"bn": "আরও শুনবেন, নাকি কোনো টেস্টের নাম বলবেন?", "hi": "और सुनेंगे, या किसी टेस्ट का नाम बताएँगे?",
+                      "en": "Shall I go on, or would you like to name a test?"}[lang])
+    else:
+        parts.append({"bn": "এই ছিল সব টেস্ট। কোনো টেস্টের দাম বা প্রস্তুতি জানতে চাইলে নামটা বলুন।",
+                      "hi": "ये थे सारे टेस्ट। किसी टेस्ट का दाम या तैयारी जाननी हो तो नाम बताइए।",
+                      "en": "That's all of them. Name a test if you'd like its price or preparation."}[lang])
+    return " ".join(parts), following if more else None
+
+
+def multi_test_rate_reply(found: list[tuple[str, object]], missing: list[dict], lang: str) -> str:
+    """"CBC is 400 rupees, Lipid Profile 650 rupees and TSH 350 rupees. Altogether that is 1400 rupees."
+
+    Each price is the clinic's catalogue figure and the total is their sum, worked out here in code --
+    the model never sees a number (CLAUDE.md section 1). A total is only said over two or more FOUND
+    tests, and when a test was not found it is labelled as the total of the ones found, never as the
+    total of everything the caller asked for. A test the clinic could not pin down gets its own
+    sentence: the not-found path, with the clinic's suggestions when it has any."""
+    parts: list[str] = []
+    if found:
+        per_test = {
+            "bn": [f"{name} {_rupees(rate)} টাকা" for name, rate in found],
+            "hi": [f"{name} {_rupees(rate)} रुपये" for name, rate in found],
+            "en": [f"{name} is {_rupees(rate)} rupees" for name, rate in found],
+        }.get(lang)
+        parts.append(spoken_list(per_test, lang) + ("." if lang == "en" else "।"))
+        if len(found) > 1:
+            total = _rupees(sum(float(rate) for _, rate in found))
+            if missing:
+                parts.append(
+                    {
+                        "bn": f"যে টেস্টগুলো পেলাম, সেগুলো মিলিয়ে মোট {total} টাকা।",
+                        "hi": f"जो टेस्ट मिले, उनका कुल {total} रुपये है।",
+                        "en": f"The ones I found come to {total} rupees altogether.",
+                    }[lang]
+                )
+            else:
+                parts.append(
+                    {
+                        "bn": f"সব মিলিয়ে মোট {total} টাকা।",
+                        "hi": f"सब मिलाकर कुल {total} रुपये।",
+                        "en": f"Altogether that is {total} rupees.",
+                    }[lang]
+                )
+    for miss in missing:
+        q, sugg = miss["query"], miss["suggestions"]
+        named = "'" + q + "'" if q else ""
+        if lang == "bn":
+            if miss["ambiguous"] and sugg:
+                lead = named + " বলতে " if q else ""
+                parts.append(lead + "একাধিক টেস্ট আছে -- " + " নাকি ".join(sugg) + ", কোনটা?")
+            elif sugg:
+                lead = named + " নামে টেস্ট" if q else "একটা টেস্ট"
+                parts.append(lead + " খুঁজে পাইনি। আপনি কি " + ", ".join(sugg) + " বলতে চাইছেন?")
+            else:
+                lead = named + " নামে কোনো টেস্ট" if q else "একটা টেস্ট"
+                parts.append(lead + " আমাদের তালিকায় নেই।")
+        elif lang == "hi":
+            if miss["ambiguous"] and sugg:
+                lead = named + " के " if q else ""
+                parts.append(lead + "एक से ज़्यादा टेस्ट हैं -- " + " या ".join(sugg) + ", कौन सा?")
+            elif sugg:
+                lead = named + " नाम का टेस्ट" if q else "एक टेस्ट"
+                parts.append(lead + " नहीं मिला। क्या आप " + ", ".join(sugg) + " कहना चाह रहे हैं?")
+            else:
+                lead = named + " नाम का कोई टेस्ट" if q else "एक टेस्ट"
+                parts.append(lead + " हमारी सूची में नहीं है।")
+        else:
+            if miss["ambiguous"] and sugg:
+                lead = "For " + named + ", " if q else ""
+                parts.append(lead + "I found more than one test -- " + " or ".join(sugg) + ", which one?")
+            elif sugg:
+                what = "a test called " + named if q else "one of the tests"
+                parts.append("I couldn't find " + what + ". Did you mean " + ", ".join(sugg) + "?")
+            else:
+                parts.append(("There is no test called " + named if q else "One of the tests is not") + " on our list.")
+    return " ".join(parts)
+
+
 def _not_found_test(slots: dict, result: dict, lang: str) -> str:
     q = _query(slots, "test_name", lang)
     sugg = _suggestions(result, lang)
@@ -291,26 +585,52 @@ def _not_found_doctor(slots: dict, result: dict, lang: str) -> str:
     return f"{base} Tell me what's troubling you, and I can suggest the right doctor."
 
 
+# story: "Caller asks when a doctor sits"
+def chamber_days_reply(name: str, slots: dict, result: dict, lang: str) -> str:
+    """"Doctor Sen sits on Monday, Wednesday and Friday, 10:00-12:00. The next sitting is Thursday,
+    2026-10-08." -- for a caller who asked WHEN a doctor sits, without a day of their own. Every word
+    of it is the clinic's: the weekdays and the next date from the availability answer, the hours
+    only when the clinic says every sitting has the same ones. "" (the caller hears the plain
+    next-date answer instead) when a day was asked for, or the clinic sent no weekdays."""
+    days = [d for d in (result.get("chamber_days") or []) if isinstance(d, int) and 0 <= d <= 6]
+    if slots.get("date") or not days or not result.get("available"):
+        return ""
+    listed = spoken_list([WEEKDAY_WORDS.get(lang, WEEKDAY_WORDS["bn"])[d] for d in days], lang)
+    hours = result.get("regular_chamber_hours")
+    next_day = spoken_day(result.get("date"), lang) if result.get("date") else ""
+    if lang == "bn":
+        reply = f"{name} {listed} বসেন" + (f", সময় {hours}।" if hours else "।")
+        return reply + (f" পরের বসা {next_day}।" if next_day else "")
+    if lang == "hi":
+        reply = f"{name} {listed} को बैठते हैं" + (f", समय {hours}।" if hours else "।")
+        return reply + (f" अगली बार वे {next_day} को बैठेंगे।" if next_day else "")
+    reply = f"{name} sits on {listed}" + (f", {hours}." if hours else ".")
+    return reply + (f" The next sitting is {next_day}." if next_day else "")
+
+
 def doctor_availability_reply(slots: dict, result: dict, lang: str) -> str:
     hi = lang == "hi"
     if not result.get("found"):
         return _not_found_doctor(slots, result, lang)
 
     name = _doctor_name(slots, result, lang)
+    days = chamber_days_reply(name, slots, result, lang)
+    if days:
+        return days
     if result.get("available"):
         hours = result.get("chamber_hours", "")
         date = result.get("date")
         if hi:
             when = f" {date} को" if date else " आज"
-            return f"जी हाँ,{when} {name} चेंबर में रहेंगे। समय: {hours}।"
+            return f"जी हाँ,{when} {name} {hours} चेंबर में रहेंगे।"
         when = f" on {date}" if date else " today"
-        return f"Yes, {name} will be in the chamber{when}. Timing: {hours}."
+        return f"Yes, {name} will be in the chamber{when}, {hours}."
 
     next_date = result.get("next_available_date")
     if next_date:
         if hi:
-            return f"{name} उस दिन नहीं बैठेंगे। अगला उपलब्ध दिन: {next_date}।"
-        return f"{name} does not sit on that day. The next available day is {next_date}."
+            return f"{name} उस दिन नहीं बैठेंगे। उनका अगला दिन {spoken_day(next_date, 'hi')} है।"
+        return f"{name} does not sit on that day. Their next sitting is {spoken_day(next_date, 'en')}."
     if hi:
         return f"{name} अभी किसी तय दिन नहीं बैठ रहे हैं। आप हमारे काउंटर पर पूछ सकते हैं।"
     return f"{name} is not sitting on any fixed day right now. You can ask at our counter."
@@ -381,6 +701,75 @@ def date_ask_prompt(candidates, lang: str) -> str:
 
 
 # story: "Caller names only a doctor"
+# story: "Caller moves an existing appointment"
+def move_day_prompt(result: dict, lang: str) -> str:
+    """Which day to move to, with the doctor's own sitting days so the caller is not guessing:
+    "Doctor Sen sits on Tuesday, Thursday and Saturday, 10:00-12:00. The next sitting is Thursday,
+    2026-10-08. Which day shall I move it to?" -- every day and hour from the clinic's availability
+    answer (chamber_days_reply). Without that answer, only the question."""
+    if lang == "bn":
+        alias = result.get("doctor_name_bn")
+        name = f"ডাঃ {alias}" if alias else (result.get("doctor_name") or "ডাক্তার")
+        ask = "কোন দিনে সরাতে চান?"
+    else:
+        name = _doctor_name({}, result, lang)
+        ask = "किस दिन पर ले जाना चाहते हैं?" if lang == "hi" else "Which day would you like to move it to?"
+    days = chamber_days_reply(name, {}, result, lang) if result.get("found") else ""
+    return f"{days} {ask}".strip()
+
+
+def move_same_day_prompt(booking: dict, lang: str) -> str:
+    """The "new" day the caller gave is the day the booking is already on. Usually they are pointing at the
+    booking ("the Saturday one") and want it gone, not moved -- Bengali "সরাতে চাই" is both "move" and "remove".
+    Asked, never guessed: move to another day, or cancel? Live 2026-10-07: the caller gave the booking's own day
+    three times and heard "which day shall I move it to?" three times. `booking` is clinic-api's lookup row."""
+    day = spoken_day(booking.get("date"), lang)
+    time = booking.get("time_slot") or ""
+    if lang == "bn":
+        when = f"{day}, {time}" if time else day
+        return f"আপনার অ্যাপয়েন্টমেন্ট তো ওই দিনেই আছে -- {when}। অন্য কোনো দিনে সরাতে চান, নাকি অ্যাপয়েন্টমেন্টটা বাতিল করতে চান?"
+    if lang == "hi":
+        when = f"{day}, {time}" if time else day
+        return f"आपकी अपॉइंटमेंट तो उसी दिन है -- {when}। किसी और दिन पर ले जाना चाहते हैं, या अपॉइंटमेंट कैंसल करनी है?"
+    when = f"{day} at {time}" if time else day
+    return f"Your appointment is already on that day -- {when}. Would you like to move it to another day, or cancel it?"
+
+
+def move_time_prompt(hours: str, lang: str) -> str:
+    """The time given is outside the doctor's chamber on the new day: say the chamber hours and ask again."""
+    if lang == "bn":
+        return f"ওই দিন চেম্বারের সময় {hours}। এর মধ্যে কোন সময়ে করব?"
+    if lang == "hi":
+        return f"उस दिन चैंबर का समय {hours} है। इसमें किस समय करूँ?"
+    return f"That day the chamber is {hours}. What time within that shall I make it?"
+
+
+def doctor_day_unavailable_prompt(result: dict, lang: str, sitting_over: bool = False) -> str:
+    """See reply_templates.doctor_day_unavailable_prompt."""
+    hi = lang == "hi"
+    doctor = _doctor_name({}, result, lang)
+    if sitting_over:
+        refusal = f"{doctor} का आज का चैंबर का समय निकल चुका है" if hi else f"{doctor}'s chamber today is already over"
+    else:
+        refusal = f"{doctor} उस दिन नहीं बैठते" if hi else f"{doctor} doesn't sit that day"
+    next_date = result.get("next_available_date") or result.get("date")
+    if not next_date:
+        return (
+            f"{refusal}, और अगले दो हफ़्तों में भी नहीं। किसी और डॉक्टर के बारे में बताऊँ?"
+            if hi
+            else f"{refusal}, or in the next two weeks. Shall I tell you about another doctor?"
+            if not sitting_over
+            else f"{refusal}, and they don't sit in the next two weeks. Shall I tell you about another doctor?"
+        )
+    hours = result.get("chamber_hours")
+    day = spoken_day(next_date, lang)
+    if hi:
+        hours_clause = f", चैंबर का समय {hours}" if hours else ""
+        return f"{refusal}। उनका अगला दिन {day} है{hours_clause}। उसी दिन बुक करूँ, या कोई और दिन?"
+    hours_clause = f", in the chamber {hours}" if hours else ""
+    return f"{refusal}. Their next sitting is {day}{hours_clause}. Shall I book that day, or another day?"
+
+
 def doctor_offer_prompt(result: dict, lang: str, ask_time: bool = False) -> str:
     """See reply_templates.doctor_offer_prompt."""
     hi = lang == "hi"
@@ -531,12 +920,9 @@ def booking_reply(slots: dict, result: dict, lang: str) -> str:
             if hi
             else "Sorry, the doctor doesn't sit that day. Could you say another day?"
         )
-    if reason == "invalid_slot":
-        return (
-            "माफ़ कीजिए, वह समय ठीक नहीं है। चेंबर के समय के भीतर कोई समय बताएँगे?"
-            if hi
-            else "Sorry, that time isn't valid. Could you give a time within the chamber hours?"
-        )
+    slot_refusal = _slot_refusal(result, lang, slots.get("time_slot"))
+    if slot_refusal:
+        return slot_refusal
     if reason == "date_in_past":
         return (
             "वह तारीख तो निकल चुकी है। अगले हफ़्ते उसी दिन के लिए बुक कर दूँ?"
@@ -557,6 +943,17 @@ def booking_reply(slots: dict, result: dict, lang: str) -> str:
 
 
 # story: "Caller cannot give a contact number"
+def no_booking_on_number(phone: str, lang: str) -> str:
+    """See reply_templates.no_booking_on_number."""
+    spelled = " ".join(phone)
+    return (
+        f"{spelled} नंबर पर कोई बुकिंग नहीं मिली। कन्फ़र्मेशन नंबर बताएँगे, या जिस नंबर से बुक किया था वह एक बार फिर बताएँगे?"
+        if lang == "hi"
+        else f"I couldn't find a booking on {spelled}. Could you give me the confirmation number, or say the number you "
+        "booked from once more?"
+    )
+
+
 def phone_continue_prompt(so_far: str, lang: str) -> str:
     """See reply_templates.phone_continue_prompt."""
     spelled = " ".join(so_far)
@@ -569,37 +966,53 @@ def phone_continue_prompt(so_far: str, lang: str) -> str:
 
 # story: "Caller gives everything in one sentence"
 # story: "Patient name is misheard"
+
+def _with_title(name: str | None) -> str:
+    """ "Dr." exactly once. The canonical name already carries it ("Dr. A. Sen"), so the read-back's own
+    "Dr. {name}" said "Dr. Dr. A. Sen" to every English-speaking caller."""
+    name = (name or "").strip()
+    return name if re.match(r"(?i)^(dr\.?|doctor)\s", name) else f"Dr. {name}"
+
 def booking_confirmation_readback(slots: dict, action: str, lang: str) -> str:
     hi = lang == "hi"
+    # The number the confirmation goes to: a contact number given for it wins over the calling line, and with none at
+    # all (the caller declined -- story "Caller cannot give a contact number") the clause is left out. It used to be
+    # read as the literal "फ़ोन नंबर None" / "phone number None" (live 2026-10-07); Bengali already did this right.
+    phone = slots.get("contact_phone") or slots.get("phone")
+    hi_phone = f", फ़ोन नंबर {phone}" if phone else ""
+    en_phone = f", phone number {phone}" if phone else ""
     if action == "book_appointment":
         if hi:
             return (
-                f"तो {slots.get('doctor_name')} डॉक्टर के पास {slots.get('date')} को, "
-                f"समय {slots.get('time_slot')} पर, मरीज़ का नाम {slots.get('patient_name')}, "
-                f"फ़ोन नंबर {slots.get('phone')} -- यह अपॉइंटमेंट कन्फ़र्म कर दूँ?"
+                f"तो {slots.get('doctor_name_hi') or slots.get('doctor_name')} डॉक्टर के पास {spoken_day(slots.get('date'), 'hi')} को, "
+                f"समय {slots.get('time_slot')} पर, मरीज़ का नाम {slots.get('patient_name')}"
+                f"{hi_phone} -- यह अपॉइंटमेंट कन्फ़र्म कर दूँ?"
             )
         return (
-            f"So, with Dr. {slots.get('doctor_name')} on {slots.get('date')} at {slots.get('time_slot')}, "
-            f"for {slots.get('patient_name')}, phone number {slots.get('phone')} -- shall I confirm this?"
+            f"So, with {_with_title(slots.get('doctor_name'))} on {spoken_day(slots.get('date'), 'en')} at {slots.get('time_slot')}, "
+            f"for {slots.get('patient_name')}{en_phone} -- shall I confirm this?"
         )
     if action == "book_test":
         tests = ", ".join(slots.get("_test_names_display", [])) or ("टेस्ट" if hi else "the tests")
         if hi:
             return (
-                f"तो {slots.get('date')} को {tests} -- मरीज़ का नाम {slots.get('patient_name')}, "
-                f"फ़ोन नंबर {slots.get('phone')} -- यह बुकिंग कन्फ़र्म कर दूँ?"
+                f"तो {slots.get('date')} को {tests} -- मरीज़ का नाम {slots.get('patient_name')}"
+                f"{hi_phone} -- यह बुकिंग कन्फ़र्म कर दूँ?"
             )
         return (
-            f"So {tests} on {slots.get('date')}, for {slots.get('patient_name')}, "
-            f"phone number {slots.get('phone')} -- shall I confirm this booking?"
+            f"So {tests} on {slots.get('date')}, for {slots.get('patient_name')}"
+            f"{en_phone} -- shall I confirm this booking?"
         )
     if action == "reschedule_appointment":
         return (
-            f"तो अपॉइंटमेंट {slots.get('new_date')} को, समय {slots.get('new_time_slot')} पर ले जाऊँ?"
+            f"तो अपॉइंटमेंट {spoken_day(slots.get('new_date'), 'hi')} को, समय {slots.get('new_time_slot')} पर ले जाऊँ?"
             if hi
-            else f"So I'll move the appointment to {slots.get('new_date')} at {slots.get('new_time_slot')} -- confirm?"
+            else f"So I'll move the appointment to {spoken_day(slots.get('new_date'), 'en')} at {slots.get('new_time_slot')} -- confirm?"
         )
     if action == "cancel_appointment":
+        if slots.get("phone"):  # see reply_templates.booking_confirmation_readback
+            spelled = " ".join(slots["phone"])
+            return f"{spelled} नंबर से की गई अपॉइंटमेंट रद्द कर दूँ?" if hi else f"Shall I cancel the appointment booked from {spelled}?"
         return "आपकी अपॉइंटमेंट रद्द कर दूँ?" if hi else "Shall I cancel your appointment?"
     if action == "add_test_booking":
         return (
@@ -643,11 +1056,64 @@ def reschedule_reply(result: dict, lang: str) -> str:
             if hi
             else "That time is already booked. Your original appointment is unchanged."
         )
+    slot_refusal = _slot_refusal(result, lang)
+    if slot_refusal:
+        return slot_refusal
     return (
         "माफ़ कीजिए, अपॉइंटमेंट बदली नहीं जा सकी। आपकी पुरानी अपॉइंटमेंट वैसी ही है।"
         if hi
         else "Sorry, I couldn't move the appointment. Your original appointment is unchanged."
     )
+
+
+def _slot_refusal(result: dict, lang: str, asked: str | None = None) -> str | None:
+    """See reply_templates._slot_refusal_bn: valid_slots are schedule start times, said as a range, never as free.
+    `asked`: the time the caller gave, so a time inside the range but off the clinic's grid is answered with the
+    two start times either side of it. (Hindi and English wording is REASONED, not reviewed by a native speaker.)"""
+    from agent.reply_templates import off_grid_neighbours
+
+    hi = lang == "hi"
+    reason = result.get("reason")
+    valid = result.get("valid_slots") or []
+    if reason == "invalid_slot":
+        near = off_grid_neighbours(asked, valid)
+        if near:
+            below, above, step = near
+            if hi:
+                every = f" समय हर {step} मिनट पर होते हैं।" if step else ""
+                return f"माफ़ कीजिए, {asked} पर अपॉइंटमेंट नहीं होती।{every} {below} या {above}, कौन सा ठीक रहेगा?"
+            every = f" Times are every {step} minutes." if step else ""
+            return f"Sorry, appointments aren't given at {asked}.{every} {below} or {above}, which would suit you?"
+        if valid:
+            return (
+                f"माफ़ कीजिए, उस समय अपॉइंटमेंट नहीं होती। {valid[0]} से {valid[-1]} के बीच कोई समय बताएँगे?"
+                if hi
+                else f"Sorry, appointments aren't given at that time. Could you give a time between {valid[0]} and {valid[-1]}?"
+            )
+        return (
+            "माफ़ कीजिए, वह समय ठीक नहीं है। चेंबर के समय के भीतर कोई समय बताएँगे?"
+            if hi
+            else "Sorry, that time isn't valid. Could you give a time within the chamber hours?"
+        )
+    if reason == "slot_passed":
+        if valid:
+            return (
+                f"वह समय आज निकल चुका है। आज {valid[0]} से {valid[-1]} के बीच कोई समय बताएँगे, या कोई और दिन?"
+                if hi
+                else f"That time has already passed today. Could you give a time between {valid[0]} and {valid[-1]} today, or another day?"
+            )
+        return (
+            "वह समय आज निकल चुका है। कोई और दिन बताएँगे?"
+            if hi
+            else "That time has already passed today. Could you say another day?"
+        )
+    if reason == "sitting_over":
+        return (
+            "आज का चैंबर का समय निकल चुका है। कोई और दिन बताएँगे?"
+            if hi
+            else "Today's chamber is already over. Could you say another day?"
+        )
+    return None
 
 
 # story: "Caller cancels an appointment"
@@ -863,27 +1329,30 @@ def blood_test_list_reply(spoken_names: list[str], lang: str) -> str:
 
 
 def department_route_reply(result: dict, symptom: str, lang: str) -> str:
+    from agent.reply_templates import spoken_department
+
     hi = lang == "hi"
     if result.get("matched"):
         doctors = result.get("doctors") or []
         who = (
             (f" हमारे यहाँ {', '.join(doctors)} हैं।" if hi else f" We have {', '.join(doctors)} here.") if doctors else ""
         )
+        dept = spoken_department(result, lang, "department_name")
         base = (
-            f"इसके लिए {result['department_name']} विभाग में दिखाना ठीक रहेगा।"
+            f"इसके लिए {dept} विभाग में दिखाना ठीक रहेगा।"
             if hi
-            else f"For this, it would be best to see the {result['department_name']} department."
+            else f"For this, it would be best to see the {dept} department."
         )
         ask = " डॉक्टर की अपॉइंटमेंट बना दूँ?" if hi else " Shall I book a doctor's appointment?"
         return base + who + ask
     if result.get("ambiguous"):
-        by_dept = result.get("doctors_by_department") or {}
+        by_dept = result.get(f"doctors_by_department_{lang}") or result.get("doctors_by_department") or {}
 
         def _with_doctors(name: str) -> str:
             docs = by_dept.get(name) or []
             return f"{name} ({', '.join(docs)})" if docs else name
 
-        parts = [_with_doctors(n) for n in result["candidates"]]
+        parts = [_with_doctors(n) for n in (result.get(f"candidates_{lang}") or result["candidates"])]
         return (
             f"यह {' या '.join(parts)} -- इनमें से कोई एक विभाग हो सकता है। कौन सा बताएँगे?"
             if hi
@@ -963,8 +1432,52 @@ def spelling_readback(spelled: str, lang: str) -> str:
 # break (one long comma run was never actually spoken on a live call).
 
 
+def doctor_chosen_ack(slots: dict, lang: str) -> str:
+    """Hindi / English twin of agent/reply_templates.doctor_chosen_ack."""
+    if lang == "hi":
+        return f"ठीक है, {slots.get('doctor_name_hi') or slots.get('doctor_name')} डॉक्टर।"
+    return f"All right, {_with_title(slots.get('doctor_name'))}."
+
+
+def doctor_choice_prompt(departments: list[str], lang: str) -> str:
+    """Hindi / English twin of agent/reply_templates.doctor_choice_prompt (see its docstring)."""
+    from agent.reply_templates import _grouped
+
+    if lang == "hi":
+        ask = "किस डॉक्टर को दिखाना चाहते हैं? नाम न पता हो तो तकलीफ़ या विभाग बताइए।"
+        if not departments:
+            return ask
+        listed = "। ".join(", ".join(g) for g in _grouped(departments))
+        return f"{ask} हमारे यहाँ ये विभाग हैं -- {listed}।"
+    ask = "Which doctor would you like to see? If you don't know a name, tell me the problem or the department."
+    if not departments:
+        return ask
+    listed = ". ".join(", ".join(g) for g in _grouped(departments))
+    return f"{ask} We have {listed}."
+
+
+def department_list_prompt(departments: list[str], lang: str) -> str:
+    """Hindi / English twin of agent/reply_templates.department_list_prompt (see its docstring)."""
+    from agent.reply_templates import _grouped
+
+    if lang == "hi":
+        if not departments:
+            return "क्या तकलीफ़ हो रही है, ज़रा बताइए? उसी के हिसाब से बता दूँगी किस विभाग में दिखाना है।"
+        listed = "। ".join(", ".join(g) for g in _grouped(departments))
+        return f"हमारे यहाँ ये विभाग हैं -- {listed}। किस विभाग में दिखाना चाहते हैं? तकलीफ़ बताएँगे तो सही विभाग भी बता दूँगी।"
+    if not departments:
+        return "Could you tell me what the problem is? I'll tell you which department to see."
+    listed = ". ".join(", ".join(g) for g in _grouped(departments))
+    return f"We have these departments: {listed}. Which one would you like? Or tell me the problem and I'll find the right one."
+
+
 def doctor_list_reply(result: dict, lang: str) -> str:
-    from agent.reply_templates import MAX_DOCTORS_SPOKEN, _grouped, _spoken_doctor
+    from agent.reply_templates import (
+        MAX_DOCTORS_SPOKEN,
+        _grouped,
+        _spoken_doctor,
+        spoken_departments,
+    )
 
     hi = lang == "hi"
     names = [n for n in (_spoken_doctor(d, lang) for d in (result.get("doctors") or [])) if n]
@@ -975,7 +1488,9 @@ def doctor_list_reply(result: dict, lang: str) -> str:
             else "Sorry, I cannot see the list of doctors just now. You could ask at the counter."
         )
     if len(names) > MAX_DOCTORS_SPOKEN:
-        departments = sorted({d.get("department") for d in result["doctors"] if d.get("department")})
+        # Hindi needs the spoken form or the whole reply is blocked; English
+        # wants the Latin name, which is what spoken_departments falls back to.
+        departments = spoken_departments(result["doctors"], lang)
         if hi:
             listed = "। ".join(", ".join(g) for g in _grouped(departments))
             return f"हमारे यहाँ इन विभागों में डॉक्टर बैठते हैं -- {listed}। आप किस विभाग के बारे में पूछ रहे हैं?"
@@ -989,11 +1504,15 @@ def doctor_list_reply(result: dict, lang: str) -> str:
 
 
 def doctors_by_department_reply(result: dict, lang: str) -> str:
-    from agent.reply_templates import _grouped, _spoken_doctor
+    from agent.reply_templates import (
+        _grouped,
+        _spoken_doctor,
+        spoken_department,
+    )
 
     hi = lang == "hi"
     if not result.get("found"):
-        offered = result.get("did_you_mean") or []
+        offered = result.get(f"did_you_mean_{lang}") or result.get("did_you_mean") or []
         query = result.get("query") or ""
         if result.get("ambiguous") and offered:
             return (
@@ -1014,7 +1533,7 @@ def doctors_by_department_reply(result: dict, lang: str) -> str:
             "Could you give me another department or a doctor's name?"
         )
     names = [n for n in (_spoken_doctor(d, lang) for d in (result.get("doctors") or [])) if n]
-    department = result.get("department") or ""
+    department = spoken_department(result, lang)
     if not names:
         return (
             f"{department} विभाग में अभी कोई डॉक्टर सूची में नहीं है। किसी और विभाग के बारे में देखूँ?"

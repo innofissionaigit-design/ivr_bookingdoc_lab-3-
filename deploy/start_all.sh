@@ -66,25 +66,25 @@ cat > /workspace/bin/_run_tts.sh <<'EOF'
 #!/bin/bash
 source /workspace/kolkata-care-voice-agent/deploy/env.sh
 cd /workspace/kolkata-care-voice-agent
-exec /workspace/tts_venv/bin/python3 -m uvicorn tts_server:app --host ${INTERNAL_BIND_HOST:-127.0.0.1} --port 8002
+exec /workspace/tts_venv/bin/python3 -m uvicorn tts_server:app --host ${INTERNAL_BIND_HOST:-127.0.0.1} --port ${TTS_PORT:-8002}
 EOF
 cat > /workspace/bin/_run_clinic.sh <<'EOF'
 #!/bin/bash
 source /workspace/kolkata-care-voice-agent/deploy/env.sh
 cd /workspace/kolkata-care-voice-agent/clinic-api
-exec /workspace/venv/bin/python3 -m uvicorn main:app --host ${INTERNAL_BIND_HOST:-127.0.0.1} --port 8080
+exec /workspace/venv/bin/python3 -m uvicorn main:app --host ${INTERNAL_BIND_HOST:-127.0.0.1} --port ${CLINIC_API_PORT:-8080}
 EOF
 cat > /workspace/bin/_run_main.sh <<'EOF'
 #!/bin/bash
 source /workspace/kolkata-care-voice-agent/deploy/env.sh
 cd /workspace/kolkata-care-voice-agent
-exec /workspace/venv/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8100
+exec /workspace/venv/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port ${VOICE_AGENT_PORT:-8100}
 EOF
 cat > /workspace/bin/_run_pcm.sh <<'EOF'
 #!/bin/bash
 source /workspace/kolkata-care-voice-agent/deploy/env.sh
 cd /workspace/kolkata-care-voice-agent
-exec /workspace/venv/bin/python3 -m uvicorn main_pcm:app --host 0.0.0.0 --port 8101
+exec /workspace/venv/bin/python3 -m uvicorn main_pcm:app --host 0.0.0.0 --port ${VOICE_PCM_PORT:-8101}
 EOF
 # English ASR -- its OWN venv (mainline NeMo, cannot share an environment
 # with the AI4Bharat fork the main venv uses for bn/hi -- see
@@ -99,15 +99,15 @@ exec /workspace/venv-en-nemo/bin/python3 -m uvicorn english_asr_server:app --hos
 EOF
 chmod +x /workspace/bin/_run_*.sh
 
-start tts         8002 /workspace/logs/tts_server.log   /workspace/bin/_run_tts.sh
-start clinic-api  8080 /workspace/logs/clinic_api.log   /workspace/bin/_run_clinic.sh
+start tts         "$TTS_PORT" /workspace/logs/tts_server.log   /workspace/bin/_run_tts.sh
+start clinic-api  "$CLINIC_API_PORT" /workspace/logs/clinic_api.log   /workspace/bin/_run_clinic.sh
 # Admission control counts calls PER PROCESS, so two media entrypoints share no cap (an external
 # review flagged this). ONLY_PCM=1 starts just the PCM entrypoint, which is the one to run when
 # real capacity limits matter; the WebM one is the browser-prototype path.
 if [ "${ONLY_PCM:-0}" != "1" ]; then
-start voice-agent 8100 /workspace/logs/main_app.log     /workspace/bin/_run_main.sh
+start voice-agent "$VOICE_AGENT_PORT" /workspace/logs/main_app.log     /workspace/bin/_run_main.sh
 fi
-start voice-pcm   8101 /workspace/logs/pcm_app.log      /workspace/bin/_run_pcm.sh
+start voice-pcm   "$VOICE_PCM_PORT" /workspace/logs/pcm_app.log      /workspace/bin/_run_pcm.sh
 # The English ASR process exists only to serve the English language. In a Bengali-only build
 # (VOICE_AGENT_LANGUAGES=bn, the rollback lever -- deploy/env.sh) nothing calls it, so it is not started, and
 # a copy left over from the three-language build is stopped (by port, like everything here) to free its GPU memory.
